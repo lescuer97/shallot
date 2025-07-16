@@ -2,7 +2,10 @@ module github.com/user/shallot
 
 go 1.24.3
 
-require github.com/fiatjaf/khatru v0.18.2
+require (
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
+	github.com/fiatjaf/khatru v0.18.2
+)
 
 require (
 	github.com/ImVexed/fasturl v0.0.0-20230304231329-4e41488060f3 // indirect
@@ -15,7 +18,6 @@ require (
 	github.com/cloudwego/base64x v0.1.5 // indirect
 	github.com/coder/websocket v1.8.13 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/fasthttp/websocket v1.5.12 // indirect
 	github.com/fiatjaf/eventstore v0.16.2 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
