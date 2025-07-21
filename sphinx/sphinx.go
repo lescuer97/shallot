@@ -26,12 +26,11 @@ package sphinx
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"net/url"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
@@ -57,12 +56,25 @@ type OnionPacket struct {
 	EncryptedPayload []byte
 }
 
+type FragmentationHeader struct {
+	FragmentID     [16]byte // Unique identifier for the fragmented message
+	FragmentIndex  uint16   // Index of this fragment (starting from 0)
+	TotalFragments uint16   // Total number of fragments
+}
+
+type FragmentedOnionPacket struct {
+	OnionPacket
+	FragmentHeader *FragmentationHeader // nil if not fragmented
+}
+
+// Add a magic prefix to the fragmentation header for robust detection
+const fragmentationMagic = "SPNXFRAG"
+
 func NewSphinx() (*Sphinx, error) {
 	privateKey, err := secp256k1.GeneratePrivateKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate private key: %w", err)
 	}
-
 	return &Sphinx{
 		privateKey: privateKey,
 		publicKey:  privateKey.PubKey(),
@@ -80,223 +92,233 @@ func (s *Sphinx) GetPublicKey() *secp256k1.PublicKey {
 	return s.publicKey
 }
 
-func (s *Sphinx) Encode(message []byte, relays []*Relay) (*OnionPacket, error) {
+// Helper to estimate the onion overhead for a given relay path
+func estimateOnionOverhead(relays []*Relay) int {
+	// Each layer adds: 33 bytes (pubkey) + 16 bytes (GCM tag) + 2 bytes (header) + avg 32 bytes (URL)
+	// For the worst case, assume max URL length (say 64 bytes)
+	overhead := 0
+	for i := 0; i < len(relays); i++ {
+		// 33 (pubkey) + 16 (GCM) + 2 (header) + 64 (URL)
+		overhead += 33 + 16 + 2 + 64
+	}
+	return overhead
+}
+
+func (s *Sphinx) EncodeFragmented(message []byte, relays []*Relay) ([]*FragmentedOnionPacket, error) {
 	if len(relays) == 0 {
 		return nil, fmt.Errorf("at least one relay is required")
 	}
-
 	if len(relays) > NumMaxHops {
 		return nil, fmt.Errorf("too many hops: %d > %d", len(relays), NumMaxHops)
 	}
-
 	if len(message) == 0 {
 		return nil, fmt.Errorf("cannot encode zero-length message")
 	}
 
-	encryptedPayload, err := s.encodePayload(message, relays)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode payload: %w", err)
+	headerSize := 8 + 16 + 2 + 2 // Magic (8) + FragmentID (16) + Index (2) + Total (2)
+	maxFragmentPayload := func() int {
+		// Use binary search to find the largest payload that fits
+		low, high := 1, MaxPacketSize-headerSize
+		var best int
+		for low <= high {
+			mid := (low + high) / 2
+			frag := make([]byte, mid)
+			fullPayload := make([]byte, headerSize+mid)
+			copy(fullPayload[:headerSize], []byte(fragmentationMagic))
+			copy(fullPayload[headerSize:], make([]byte, headerSize))
+			copy(fullPayload[headerSize+headerSize:], frag)
+			enc, err := s.encodeOnion(fullPayload, relays)
+			if err == nil && len(enc.EncryptedPayload) <= MaxPacketSize {
+				best = mid
+				low = mid + 1
+			} else {
+				high = mid - 1
+			}
+		}
+		return best
+	}()
+	if maxFragmentPayload <= 0 {
+		return nil, fmt.Errorf("MaxPacketSize too small for fragmentation header and onion overhead")
 	}
 
-	return &OnionPacket{
-		SenderPubKey:     nil, // Not needed since each layer has its own ephemeral key
-		EncryptedPayload: encryptedPayload,
-	}, nil
+	if len(message) <= maxFragmentPayload {
+		enc, err := s.encodeOnion(message, relays)
+		if err != nil {
+			return nil, err
+		}
+		return []*FragmentedOnionPacket{{OnionPacket: *enc, FragmentHeader: nil}}, nil
+	}
+
+	numFragments := (len(message) + maxFragmentPayload - 1) / maxFragmentPayload
+	if numFragments > 65535 {
+		return nil, fmt.Errorf("too many fragments")
+	}
+	var fragID [16]byte
+	_, err := crand.Read(fragID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate fragment ID: %w", err)
+	}
+	fragments := make([]*FragmentedOnionPacket, numFragments)
+	for i := 0; i < numFragments; i++ {
+		start := i * maxFragmentPayload
+		end := start + maxFragmentPayload
+		if end > len(message) {
+			end = len(message)
+		}
+		fragPayload := message[start:end]
+		head := make([]byte, headerSize)
+		copy(head[:8], []byte(fragmentationMagic))
+		copy(head[8:24], fragID[:])
+		binary.BigEndian.PutUint16(head[24:26], uint16(i))
+		binary.BigEndian.PutUint16(head[26:28], uint16(numFragments))
+		fullPayload := append(head, fragPayload...)
+		onion, err := s.encodeOnion(fullPayload, relays)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode fragment %d: %w", i, err)
+		}
+		fragments[i] = &FragmentedOnionPacket{
+			OnionPacket: *onion,
+			FragmentHeader: &FragmentationHeader{
+				FragmentID:     fragID,
+				FragmentIndex:  uint16(i),
+				TotalFragments: uint16(numFragments),
+			},
+		}
+	}
+	return fragments, nil
 }
 
-func (s *Sphinx) encodePayload(payload []byte, relays []*Relay) ([]byte, error) {
-	log.Printf("Starting encoding for payload of size %d", len(payload))
-	
-	// Prepare the payload with size header for proper padding removal
-	payloadWithSize := make([]byte, 4+len(payload))
-	binary.BigEndian.PutUint32(payloadWithSize[:4], uint32(len(payload)))
-	copy(payloadWithSize[4:], payload)
-	
-	currentPayload := payloadWithSize
+func (s *Sphinx) encodeOnion(payload []byte, relays []*Relay) (*OnionPacket, error) {
+	currentPayload := payload
 	var err error
-
-	// Build the onion layers from innermost to outermost
 	for i := len(relays) - 1; i >= 0; i-- {
-		var header []byte
-		
-		if i == len(relays)-1 {
-			// Final hop - no next hop URL, just empty header
-			header = make([]byte, 2)
-			binary.BigEndian.PutUint16(header, 0) // 0 length indicates final hop
-		} else {
-			// Intermediate hop - include next hop URL
+		header := make([]byte, 2)
+		if i != len(relays)-1 {
 			nextHopURL := []byte(relays[i+1].URL)
 			header = make([]byte, 2+len(nextHopURL))
 			binary.BigEndian.PutUint16(header, uint16(len(nextHopURL)))
 			copy(header[2:], nextHopURL)
 		}
-
-		// Combine header with current payload
 		combined := append(header, currentPayload...)
-		
-		log.Printf("Layer %d: combined size before encryption: %d", i, len(combined))
-		
-		// Encrypt the layer
 		currentPayload, err = s.encryptLayer(combined, relays[i].PublicKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encrypt layer for hop %d: %w", i, err)
 		}
-		log.Printf("Encoded layer for hop %d, encrypted size: %d", i, len(currentPayload))
 	}
-
-	// Apply final padding to achieve constant packet size
 	finalPaddedPayload, err := addPadding(currentPayload, MaxPacketSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to apply final padding: %w", err)
 	}
-	
-	log.Printf("Final packet size: %d (target: %d)", len(finalPaddedPayload), MaxPacketSize)
-	return finalPaddedPayload, nil
+	return &OnionPacket{
+		SenderPubKey:     nil,
+		EncryptedPayload: finalPaddedPayload,
+	}, nil
 }
 
 func (s *Sphinx) encryptLayer(payload []byte, recipientPubKey *secp256k1.PublicKey) ([]byte, error) {
-	// Generate ephemeral key pair for this layer
 	ephemeralPrivKey, err := secp256k1.GeneratePrivateKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate ephemeral key: %w", err)
 	}
 	ephemeralPubKey := ephemeralPrivKey.PubKey()
-
-	// Generate shared secret using ephemeral private key and recipient's public key
 	sharedSecret := secp256k1.GenerateSharedSecret(ephemeralPrivKey, recipientPubKey)
 	key := sha256.Sum256(sharedSecret)
-
 	encrypted, err := encrypt(payload, key[:])
 	if err != nil {
 		return nil, err
 	}
-
-	// Prepend the ephemeral public key to the encrypted data
 	return append(ephemeralPubKey.SerializeCompressed(), encrypted...), nil
 }
 
-func (s *Sphinx) Decode(packet *OnionPacket) (nextHopURL string, payload []byte, err error) {
-	log.Printf("Starting decoding for packet of size %d", len(packet.EncryptedPayload))
-	
-	// Check if this looks like a padded outer layer (constant MaxPacketSize)
+func (s *Sphinx) DecodeFragmented(packet *OnionPacket) (fragmentHeader *FragmentationHeader, nextHopURL string, payload []byte, err error) {
 	inputPayload := packet.EncryptedPayload
 	if len(inputPayload) == MaxPacketSize {
-		// This is likely the outer layer with padding, remove padding first
-		// Look for padding marker (0x80) from the end
 		actualSize := len(inputPayload)
-		for i := len(inputPayload) - 1; i >= 33; i-- { // Start search after pubkey size
+		for i := len(inputPayload) - 1; i >= 33; i-- {
 			if inputPayload[i] == 0x80 {
 				actualSize = i
 				break
 			}
 		}
 		inputPayload = inputPayload[:actualSize]
-		log.Printf("Removed outer padding, actual payload size: %d", actualSize)
 	}
-	
-	decrypted, senderPubKey, err := s.decryptLayer(inputPayload)
+	decrypted, _, err := s.decryptLayer(inputPayload)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to decrypt layer: %w", err)
+		return nil, "", nil, fmt.Errorf("failed to decrypt layer: %w", err)
 	}
-
-	log.Printf("Successfully decrypted layer from sender %x, decrypted size: %d", senderPubKey.SerializeCompressed(), len(decrypted))
-
-	// Parse the routing header
 	if len(decrypted) < 2 {
-		return "", nil, fmt.Errorf("payload is too short for header")
+		return nil, "", nil, fmt.Errorf("payload is too short for header")
 	}
-	
 	urlLen := int(binary.BigEndian.Uint16(decrypted[:2]))
-	
-	// If urlLen is 0, this is the final hop
 	if urlLen == 0 {
-		// Final hop - extract the payload and remove size header
 		headerPayload := decrypted[2:]
 		if len(headerPayload) == 0 {
-			return "", nil, fmt.Errorf("payload is empty")
+			return nil, "", nil, fmt.Errorf("payload is empty")
 		}
-		
-		// Remove size header to get the original payload
-		originalPayload, err := removePadding(headerPayload)
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to remove padding: %w", err)
+		// Robust fragmentation header detection
+		if len(headerPayload) >= 28 && string(headerPayload[:8]) == fragmentationMagic {
+			fragID := [16]byte{}
+			copy(fragID[:], headerPayload[8:24])
+			fragIdx := binary.BigEndian.Uint16(headerPayload[24:26])
+			total := binary.BigEndian.Uint16(headerPayload[26:28])
+			if total > 0 && fragIdx < total {
+				return &FragmentationHeader{
+					FragmentID:     fragID,
+					FragmentIndex:  fragIdx,
+					TotalFragments: total,
+				}, "", headerPayload[28:], nil
+			}
 		}
-		
-		log.Printf("Final hop, padded size: %d, original payload size: %d", len(headerPayload), len(originalPayload))
-		return "", originalPayload, nil
+		return nil, "", headerPayload, nil
 	}
-	
-	// Intermediate hop - extract next hop URL and forward payload
 	if len(decrypted) < 2+urlLen {
-		return "", nil, fmt.Errorf("payload is too short for URL")
+		return nil, "", nil, fmt.Errorf("payload is too short for URL")
 	}
-
 	nextHopURL = string(decrypted[2 : 2+urlLen])
 	forwardPayload := decrypted[2+urlLen:]
-	
-	// CRITICAL FOR TRAFFIC ANALYSIS RESISTANCE:
-	// Pad the forwarded payload to MaxPacketSize to ensure all hops receive constant-sized packets
 	paddedForwardPayload, err := addPadding(forwardPayload, MaxPacketSize)
 	if err != nil {
-		// If we can't pad to MaxPacketSize, forward as-is but log the issue
-		log.Printf("Warning: Could not pad forwarded payload to %d bytes: %v", MaxPacketSize, err)
 		paddedForwardPayload = forwardPayload
 	}
-	
-	log.Printf("Forwarding to next hop: %s, original payload size: %d, padded size: %d", 
-		nextHopURL, len(forwardPayload), len(paddedForwardPayload))
-	return nextHopURL, paddedForwardPayload, nil
+	return nil, nextHopURL, paddedForwardPayload, nil
 }
 
 func (s *Sphinx) decryptLayer(payload []byte) ([]byte, *secp256k1.PublicKey, error) {
 	if len(payload) < 33 {
 		return nil, nil, fmt.Errorf("payload is too short")
 	}
-	
-	// Extract sender's public key from the beginning of the payload
 	senderPubKeyBytes := payload[:33]
-	log.Printf("Attempting to parse sender public key: %x", senderPubKeyBytes)
 	senderPubKey, err := secp256k1.ParsePubKey(senderPubKeyBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse sender public key: %w", err)
 	}
-	
-	// Generate shared secret and decrypt the encrypted portion
-	sharedSecret, err := s.generateSharedSecret(senderPubKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	
-	// The encrypted data starts after the public key
+	sharedSecret := secp256k1.GenerateSharedSecret(s.privateKey, senderPubKey)
+	key := sha256.Sum256(sharedSecret)
 	encryptedData := payload[33:]
-	decrypted, err := decrypt(encryptedData, sharedSecret)
+	decrypted, err := decrypt(encryptedData, key[:])
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to decrypt: %w", err)
 	}
-	
 	return decrypted, senderPubKey, nil
 }
 
-func (s *Sphinx) generateSharedSecret(recipientPubKey *secp256k1.PublicKey) ([]byte, error) {
-	sharedSecret := secp256k1.GenerateSharedSecret(s.privateKey, recipientPubKey)
-	key := sha256.Sum256(sharedSecret)
-	return key[:], nil
-}
-
-func encrypt(plaintext, key []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
+func addPadding(data []byte, targetSize int) ([]byte, error) {
+	if len(data) > targetSize {
+		return nil, fmt.Errorf("data size %d exceeds target size %d", len(data), targetSize)
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
+	paddingSize := targetSize - len(data)
+	if paddingSize == 0 {
+		return data, nil
 	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
+	padded := make([]byte, targetSize)
+	copy(padded[:len(data)], data)
+	if paddingSize > 0 {
+		padded[len(data)] = 0x80
+		for i := len(data) + 1; i < targetSize; i++ {
+			padded[i] = 0x00
+		}
 	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return padded, nil
 }
 
 func decrypt(ciphertext, key []byte) ([]byte, error) {
@@ -315,67 +337,55 @@ func decrypt(ciphertext, key []byte) ([]byte, error) {
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
-// addPadding adds padding to ensure constant packet size
-// Uses PKCS#7 style padding for reliable identification
-func addPadding(data []byte, targetSize int) ([]byte, error) {
-	if len(data) > targetSize {
-		return nil, fmt.Errorf("data size %d exceeds target size %d", len(data), targetSize)
+func encrypt(plaintext, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
 	}
-	
-	paddingSize := targetSize - len(data)
-	if paddingSize == 0 {
-		return data, nil
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
 	}
-	
-	// Create padded data
-	padded := make([]byte, targetSize)
-	copy(padded[:len(data)], data)
-	
-	// Fill padding with random data, but ensure we can identify the boundary
-	// Use a special byte pattern at the start of padding: 0x80 followed by zeros
-	if paddingSize > 0 {
-		padded[len(data)] = 0x80 // Padding start marker
-		// Fill remaining with zeros (or random data)
-		for i := len(data) + 1; i < targetSize; i++ {
-			padded[i] = 0x00
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(crand.Reader, nonce); err != nil {
+		return nil, err
+	}
+	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+}
+
+func ReassembleFragments(fragments []*FragmentedOnionPacket) ([]byte, error) {
+	if len(fragments) == 0 {
+		return nil, fmt.Errorf("no fragments to reassemble")
+	}
+	var fragID *[16]byte
+	fragMap := make(map[uint16][]byte)
+	var total uint16 = 0
+	for _, frag := range fragments {
+		if frag.FragmentHeader == nil {
+			return frag.OnionPacket.EncryptedPayload, nil
 		}
+		if fragID == nil {
+			fragID = &frag.FragmentHeader.FragmentID
+			total = frag.FragmentHeader.TotalFragments
+		} else if *fragID != frag.FragmentHeader.FragmentID {
+			return nil, fmt.Errorf("fragment ID mismatch")
+		}
+		fragMap[frag.FragmentHeader.FragmentIndex] = frag.OnionPacket.EncryptedPayload
 	}
-	
-	return padded, nil
-}
-
-// removePadding removes padding from the decrypted data
-// In sphinx protocol, the padding is typically at the end and we need to determine
-// the actual payload size. For simplicity, we'll store the original size at the beginning.
-func removePadding(paddedData []byte) ([]byte, error) {
-	if len(paddedData) < 4 {
-		return nil, fmt.Errorf("padded data too short to contain size header")
+	if uint16(len(fragMap)) != total {
+		return nil, fmt.Errorf("missing fragments: have %d, want %d", len(fragMap), total)
 	}
-	
-	// Read the original size from the first 4 bytes
-	originalSize := int(binary.BigEndian.Uint32(paddedData[:4]))
-	
-	if originalSize < 0 || originalSize > len(paddedData)-4 {
-		return nil, fmt.Errorf("invalid original size: %d", originalSize)
+	indices := make([]int, total)
+	for i := 0; i < int(total); i++ {
+		indices[i] = i
 	}
-	
-	// Extract the original data (skip the 4-byte size header)
-	return paddedData[4 : 4+originalSize], nil
-}
-
-// calculatePaddedSize calculates the target size for a given layer in the onion
-func calculatePaddedSize(payloadSize int, numRemainingHops int) int {
-	// Calculate the size after all remaining encryptions
-	// Each layer adds: 33 bytes (pubkey) + GCM overhead (16 bytes) + routing header
-	estimatedOverhead := numRemainingHops * (33 + 16 + 50) // 50 bytes average for routing headers
-	
-	targetSize := payloadSize + estimatedOverhead + 100 // Add buffer
-	
-	// Ensure we don't exceed maximum packet size
-	if targetSize > MaxPacketSize {
-		return MaxPacketSize
+	var result []byte
+	for _, idx := range indices {
+		frag, ok := fragMap[uint16(idx)]
+		if !ok {
+			return nil, fmt.Errorf("missing fragment %d", idx)
+		}
+		result = append(result, frag...)
 	}
-	
-	// Round up to nearest 256 bytes for better size obfuscation
-	return ((targetSize + 255) / 256) * 256
+	return result, nil
 }
