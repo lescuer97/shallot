@@ -56,20 +56,6 @@ type OnionPacket struct {
 	EncryptedPayload []byte
 }
 
-type FragmentationHeader struct {
-	FragmentID     [16]byte // Unique identifier for the fragmented message
-	FragmentIndex  uint16   // Index of this fragment (starting from 0)
-	TotalFragments uint16   // Total number of fragments
-}
-
-type FragmentedOnionPacket struct {
-	OnionPacket
-	FragmentHeader *FragmentationHeader // nil if not fragmented
-}
-
-// Add a magic prefix to the fragmentation header for robust detection
-const fragmentationMagic = "SPNXFRAG"
-
 func NewSphinx() (*Sphinx, error) {
 	privateKey, err := secp256k1.GeneratePrivateKey()
 	if err != nil {
@@ -104,7 +90,7 @@ func estimateOnionOverhead(relays []*Relay) int {
 	return overhead
 }
 
-func (s *Sphinx) EncodeFragmented(message []byte, relays []*Relay) ([]*FragmentedOnionPacket, error) {
+func (s *Sphinx) Encode(message []byte, relays []*Relay) (*OnionPacket, error) {
 	if len(relays) == 0 {
 		return nil, fmt.Errorf("at least one relay is required")
 	}
@@ -114,78 +100,7 @@ func (s *Sphinx) EncodeFragmented(message []byte, relays []*Relay) ([]*Fragmente
 	if len(message) == 0 {
 		return nil, fmt.Errorf("cannot encode zero-length message")
 	}
-
-	headerSize := 8 + 16 + 2 + 2 // Magic (8) + FragmentID (16) + Index (2) + Total (2)
-	maxFragmentPayload := func() int {
-		// Use binary search to find the largest payload that fits
-		low, high := 1, MaxPacketSize-headerSize
-		var best int
-		for low <= high {
-			mid := (low + high) / 2
-			frag := make([]byte, mid)
-			fullPayload := make([]byte, headerSize+mid)
-			copy(fullPayload[:headerSize], []byte(fragmentationMagic))
-			copy(fullPayload[headerSize:], make([]byte, headerSize))
-			copy(fullPayload[headerSize+headerSize:], frag)
-			enc, err := s.encodeOnion(fullPayload, relays)
-			if err == nil && len(enc.EncryptedPayload) <= MaxPacketSize {
-				best = mid
-				low = mid + 1
-			} else {
-				high = mid - 1
-			}
-		}
-		return best
-	}()
-	if maxFragmentPayload <= 0 {
-		return nil, fmt.Errorf("MaxPacketSize too small for fragmentation header and onion overhead")
-	}
-
-	if len(message) <= maxFragmentPayload {
-		enc, err := s.encodeOnion(message, relays)
-		if err != nil {
-			return nil, err
-		}
-		return []*FragmentedOnionPacket{{OnionPacket: *enc, FragmentHeader: nil}}, nil
-	}
-
-	numFragments := (len(message) + maxFragmentPayload - 1) / maxFragmentPayload
-	if numFragments > 65535 {
-		return nil, fmt.Errorf("too many fragments")
-	}
-	var fragID [16]byte
-	_, err := crand.Read(fragID[:])
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate fragment ID: %w", err)
-	}
-	fragments := make([]*FragmentedOnionPacket, numFragments)
-	for i := 0; i < numFragments; i++ {
-		start := i * maxFragmentPayload
-		end := start + maxFragmentPayload
-		if end > len(message) {
-			end = len(message)
-		}
-		fragPayload := message[start:end]
-		head := make([]byte, headerSize)
-		copy(head[:8], []byte(fragmentationMagic))
-		copy(head[8:24], fragID[:])
-		binary.BigEndian.PutUint16(head[24:26], uint16(i))
-		binary.BigEndian.PutUint16(head[26:28], uint16(numFragments))
-		fullPayload := append(head, fragPayload...)
-		onion, err := s.encodeOnion(fullPayload, relays)
-		if err != nil {
-			return nil, fmt.Errorf("failed to encode fragment %d: %w", i, err)
-		}
-		fragments[i] = &FragmentedOnionPacket{
-			OnionPacket: *onion,
-			FragmentHeader: &FragmentationHeader{
-				FragmentID:     fragID,
-				FragmentIndex:  uint16(i),
-				TotalFragments: uint16(numFragments),
-			},
-		}
-	}
-	return fragments, nil
+	return s.encodeOnion(message, relays)
 }
 
 func (s *Sphinx) encodeOnion(payload []byte, relays []*Relay) (*OnionPacket, error) {
@@ -230,7 +145,7 @@ func (s *Sphinx) encryptLayer(payload []byte, recipientPubKey *secp256k1.PublicK
 	return append(ephemeralPubKey.SerializeCompressed(), encrypted...), nil
 }
 
-func (s *Sphinx) DecodeFragmented(packet *OnionPacket) (fragmentHeader *FragmentationHeader, nextHopURL string, payload []byte, err error) {
+func (s *Sphinx) Decode(packet *OnionPacket) (nextHopURL string, payload []byte, err error) {
 	inputPayload := packet.EncryptedPayload
 	if len(inputPayload) == MaxPacketSize {
 		actualSize := len(inputPayload)
@@ -244,35 +159,17 @@ func (s *Sphinx) DecodeFragmented(packet *OnionPacket) (fragmentHeader *Fragment
 	}
 	decrypted, _, err := s.decryptLayer(inputPayload)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to decrypt layer: %w", err)
+		return "", nil, fmt.Errorf("failed to decrypt layer: %w", err)
 	}
 	if len(decrypted) < 2 {
-		return nil, "", nil, fmt.Errorf("payload is too short for header")
+		return "", nil, fmt.Errorf("payload is too short for header")
 	}
 	urlLen := int(binary.BigEndian.Uint16(decrypted[:2]))
 	if urlLen == 0 {
-		headerPayload := decrypted[2:]
-		if len(headerPayload) == 0 {
-			return nil, "", nil, fmt.Errorf("payload is empty")
-		}
-		// Robust fragmentation header detection
-		if len(headerPayload) >= 28 && string(headerPayload[:8]) == fragmentationMagic {
-			fragID := [16]byte{}
-			copy(fragID[:], headerPayload[8:24])
-			fragIdx := binary.BigEndian.Uint16(headerPayload[24:26])
-			total := binary.BigEndian.Uint16(headerPayload[26:28])
-			if total > 0 && fragIdx < total {
-				return &FragmentationHeader{
-					FragmentID:     fragID,
-					FragmentIndex:  fragIdx,
-					TotalFragments: total,
-				}, "", headerPayload[28:], nil
-			}
-		}
-		return nil, "", headerPayload, nil
+		return "", decrypted[2:], nil
 	}
 	if len(decrypted) < 2+urlLen {
-		return nil, "", nil, fmt.Errorf("payload is too short for URL")
+		return "", nil, fmt.Errorf("payload is too short for URL")
 	}
 	nextHopURL = string(decrypted[2 : 2+urlLen])
 	forwardPayload := decrypted[2+urlLen:]
@@ -280,7 +177,7 @@ func (s *Sphinx) DecodeFragmented(packet *OnionPacket) (fragmentHeader *Fragment
 	if err != nil {
 		paddedForwardPayload = forwardPayload
 	}
-	return nil, nextHopURL, paddedForwardPayload, nil
+	return nextHopURL, paddedForwardPayload, nil
 }
 
 func (s *Sphinx) decryptLayer(payload []byte) ([]byte, *secp256k1.PublicKey, error) {
@@ -351,41 +248,4 @@ func encrypt(plaintext, key []byte) ([]byte, error) {
 		return nil, err
 	}
 	return gcm.Seal(nonce, nonce, plaintext, nil), nil
-}
-
-func ReassembleFragments(fragments []*FragmentedOnionPacket) ([]byte, error) {
-	if len(fragments) == 0 {
-		return nil, fmt.Errorf("no fragments to reassemble")
-	}
-	var fragID *[16]byte
-	fragMap := make(map[uint16][]byte)
-	var total uint16 = 0
-	for _, frag := range fragments {
-		if frag.FragmentHeader == nil {
-			return frag.OnionPacket.EncryptedPayload, nil
-		}
-		if fragID == nil {
-			fragID = &frag.FragmentHeader.FragmentID
-			total = frag.FragmentHeader.TotalFragments
-		} else if *fragID != frag.FragmentHeader.FragmentID {
-			return nil, fmt.Errorf("fragment ID mismatch")
-		}
-		fragMap[frag.FragmentHeader.FragmentIndex] = frag.OnionPacket.EncryptedPayload
-	}
-	if uint16(len(fragMap)) != total {
-		return nil, fmt.Errorf("missing fragments: have %d, want %d", len(fragMap), total)
-	}
-	indices := make([]int, total)
-	for i := 0; i < int(total); i++ {
-		indices[i] = i
-	}
-	var result []byte
-	for _, idx := range indices {
-		frag, ok := fragMap[uint16(idx)]
-		if !ok {
-			return nil, fmt.Errorf("missing fragment %d", idx)
-		}
-		result = append(result, frag...)
-	}
-	return result, nil
 }

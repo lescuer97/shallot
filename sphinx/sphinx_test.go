@@ -23,27 +23,21 @@ func makeRelays(t *testing.T, n int) ([]*Relay, []*Sphinx) {
 	return relays, nodes
 }
 
-func TestNoFragmentation_Simple3Relays(t *testing.T) {
+func TestSimple3Relays(t *testing.T) {
 	sender, _ := NewSphinx()
 	relays, nodes := makeRelays(t, 3)
 	msg := []byte("hello world")
-	frags, err := sender.EncodeFragmented(msg, relays)
+	pkt, err := sender.Encode(msg, relays)
 	if err != nil {
-		t.Fatalf("EncodeFragmented failed: %v", err)
+		t.Fatalf("Encode failed: %v", err)
 	}
-	if len(frags) != 1 {
-		t.Fatalf("expected 1 fragment, got %d", len(frags))
-	}
-	pkt := &frags[0].OnionPacket
 	for _, node := range nodes {
-		hdr, _, payload, err := node.DecodeFragmented(pkt)
+		nextHop, payload, err := node.Decode(pkt)
 		if err != nil {
-			t.Fatalf("DecodeFragmented failed: %v", err)
-		}
-		if hdr != nil {
-			t.Fatalf("expected no fragmentation header, got one")
+			t.Fatalf("Decode failed: %v", err)
 		}
 		pkt.EncryptedPayload = payload
+		_ = nextHop // not used in this test
 	}
 	if string(pkt.EncryptedPayload) != string(msg) {
 		t.Fatalf("final payload mismatch: got %q, want %q", pkt.EncryptedPayload, msg)
@@ -86,9 +80,9 @@ func TestEncodeOnion_MultiHopManualDecode(t *testing.T) {
 	sender, _ := NewSphinx()
 	relays, nodes := makeRelays(t, 3)
 	msg := []byte("manual multi-hop decode test")
-	packet, err := sender.encodeOnion(msg, relays)
+	packet, err := sender.Encode(msg, relays)
 	if err != nil {
-		t.Fatalf("encodeOnion failed: %v", err)
+		t.Fatalf("Encode failed: %v", err)
 	}
 	if len(packet.EncryptedPayload) > MaxPacketSize {
 		t.Fatalf("initial packet size exceeds MTU: got %d, want <= %d", len(packet.EncryptedPayload), MaxPacketSize)
@@ -98,12 +92,9 @@ func TestEncodeOnion_MultiHopManualDecode(t *testing.T) {
 		if len(currentPayload) > MaxPacketSize {
 			t.Fatalf("hop %d: payload size exceeds MTU: got %d, want <= %d", i, len(currentPayload), MaxPacketSize)
 		}
-		fragHeader, nextHop, payload, err := node.DecodeFragmented(&OnionPacket{EncryptedPayload: currentPayload})
+		nextHop, payload, err := node.Decode(&OnionPacket{EncryptedPayload: currentPayload})
 		if err != nil {
-			t.Fatalf("hop %d: DecodeFragmented failed: %v", i, err)
-		}
-		if fragHeader != nil {
-			t.Fatalf("hop %d: unexpected fragmentation header", i)
+			t.Fatalf("hop %d: Decode failed: %v", i, err)
 		}
 		currentPayload = payload
 		if i < len(nodes)-1 && nextHop == "" {
