@@ -28,12 +28,12 @@ import (
 	"crypto/cipher"
 	crand "crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net/url"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/fxamacker/cbor/v2"
 )
 
 const (
@@ -51,9 +51,29 @@ type Relay struct {
 	URL       string
 }
 
+// OnionHeader is always present and is used for routing and cryptography.
+type OnionHeader struct {
+	SenderPubKey []byte // 33 bytes, secp256k1 compressed
+	NextRelayURL Relay
+}
+
+// OnionPacket is the wire format for all packets.
 type OnionPacket struct {
-	SenderPubKey     []byte
-	EncryptedPayload []byte
+	Header           OnionHeader
+	EncryptedPayload []byte // This contains a new OnionPacket. Last hop contiains the OnionHeader and EncryptedPayload is the Payload
+}
+
+// FragmentationHeader is always present at the start of the cleartext payload.
+type FragmentationHeader struct {
+	Magic          [8]byte  // e.g., "SPNXFRAG"
+	FragmentID     [16]byte // unique per message
+	FragmentIndex  uint16   // 0-based
+	TotalFragments uint16   // 1 if not fragmented
+}
+
+type Payload struct {
+	FragmentationHeader *FragmentationHeader
+	Payload             []byte
 }
 
 func NewSphinx() (*Sphinx, error) {
@@ -104,28 +124,52 @@ func (s *Sphinx) Encode(message []byte, relays []*Relay) (*OnionPacket, error) {
 }
 
 func (s *Sphinx) encodeOnion(payload []byte, relays []*Relay) (*OnionPacket, error) {
-	currentPayload := payload
 	var err error
+	var innerPayload []byte = payload
+
 	for i := len(relays) - 1; i >= 0; i-- {
-		header := make([]byte, 2)
+		var nextRelay Relay
+		if i < len(relays)-1 {
+			nextRelay = *relays[i+1]
+		} else {
+			nextRelay = Relay{} // zero-value for last hop
+		}
+
+		onionHeader := OnionHeader{
+			SenderPubKey: s.publicKey.SerializeCompressed(),
+			NextRelayURL: nextRelay,
+		}
+
 		if i != len(relays)-1 {
-			nextHopURL := []byte(relays[i+1].URL)
-			header = make([]byte, 2+len(nextHopURL))
-			binary.BigEndian.PutUint16(header, uint16(len(nextHopURL)))
-			copy(header[2:], nextHopURL)
+			// Not last hop: wrap the previous layer as an OnionPacket
+			innerPacket := OnionPacket{
+				Header:           onionHeader,
+				EncryptedPayload: innerPayload,
+			}
+			innerPayload, err = cbor.Marshal(innerPacket)
+			if err != nil {
+				return nil, err
+			}
 		}
-		combined := append(header, currentPayload...)
-		currentPayload, err = s.encryptLayer(combined, relays[i].PublicKey)
+		// Encrypt the payload for this relay
+		innerPayload, err = s.encryptLayer(innerPayload, relays[i].PublicKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encrypt layer for hop %d: %w", i, err)
+			return nil, err
 		}
 	}
-	finalPaddedPayload, err := addPadding(currentPayload, MaxPacketSize)
+
+	finalPaddedPayload, err := addPadding(innerPayload, MaxPacketSize)
 	if err != nil {
-		return nil, fmt.Errorf("failed to apply final padding: %w", err)
+		return nil, err
 	}
+
+	outerHeader := OnionHeader{
+		SenderPubKey: s.publicKey.SerializeCompressed(),
+		NextRelayURL: *relays[0],
+	}
+
 	return &OnionPacket{
-		SenderPubKey:     nil,
+		Header:           outerHeader,
 		EncryptedPayload: finalPaddedPayload,
 	}, nil
 }
@@ -161,23 +205,16 @@ func (s *Sphinx) Decode(packet *OnionPacket) (nextHopURL string, payload []byte,
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to decrypt layer: %w", err)
 	}
-	if len(decrypted) < 2 {
-		return "", nil, fmt.Errorf("payload is too short for header")
+
+	// Try to decode as an OnionPacket (CBOR)
+	var inner OnionPacket
+	err = cbor.Unmarshal(decrypted, &inner)
+	if err == nil {
+		// Successfully decoded as an OnionPacket, so this is not the last hop
+		return inner.Header.NextRelayURL.URL, inner.EncryptedPayload, nil
 	}
-	urlLen := int(binary.BigEndian.Uint16(decrypted[:2]))
-	if urlLen == 0 {
-		return "", decrypted[2:], nil
-	}
-	if len(decrypted) < 2+urlLen {
-		return "", nil, fmt.Errorf("payload is too short for URL")
-	}
-	nextHopURL = string(decrypted[2 : 2+urlLen])
-	forwardPayload := decrypted[2+urlLen:]
-	paddedForwardPayload, err := addPadding(forwardPayload, MaxPacketSize)
-	if err != nil {
-		paddedForwardPayload = forwardPayload
-	}
-	return nextHopURL, paddedForwardPayload, nil
+	// If not CBOR, treat as the final payload (last hop)
+	return "", decrypted, nil
 }
 
 func (s *Sphinx) decryptLayer(payload []byte) ([]byte, *secp256k1.PublicKey, error) {
