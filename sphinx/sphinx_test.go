@@ -162,3 +162,97 @@ func TestOnionPrivacyAtEachHop(t *testing.T) {
 		t.Fatalf("final payload mismatch: got %q, want %q", currentPacket.EncryptedPayload, msg)
 	}
 }
+
+func TestOnionPrivacyAtEachHop5Relays(t *testing.T) {
+	sender, _ := NewSphinx()
+	relays, nodes := makeRelays(t, 5)
+	msg := []byte("privacy test message 5 relays")
+	pkt, err := sender.Encode(msg, relays)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+
+	currentPacket := pkt
+	for i, node := range nodes {
+		nextHop, payload, err := node.Decode(currentPacket)
+		if err != nil {
+			t.Fatalf("hop %d: Decode failed: %v", i, err)
+		}
+
+		if i < len(nodes)-1 {
+			if nextHop != relays[i+1].URL {
+				t.Fatalf("hop %d: expected nextHop %q, got %q", i, relays[i+1].URL, nextHop)
+			}
+		} else {
+			if nextHop != "" {
+				t.Fatalf("final hop: expected no nextHop, got %q", nextHop)
+			}
+		}
+
+		if i < len(nodes)-1 {
+			var tryMsg string
+			if err := cbor.Unmarshal(payload, &tryMsg); err == nil && tryMsg == string(msg) {
+				t.Fatalf("hop %d: payload should not be readable as message", i)
+			}
+			var tryPkt OnionPacket
+			if err := cbor.Unmarshal(payload, &tryPkt); err == nil {
+				if tryPkt.Header.NextRelayURL.URL == relays[(i+2)%len(relays)].URL {
+					t.Fatalf("hop %d: payload should not be readable as next OnionPacket", i)
+				}
+			}
+		}
+
+		currentPacket = &OnionPacket{EncryptedPayload: payload}
+	}
+
+	if string(currentPacket.EncryptedPayload) != string(msg) {
+		t.Fatalf("final payload mismatch: got %q, want %q", currentPacket.EncryptedPayload, msg)
+	}
+}
+
+func TestOnionPrivacyAtEachHop7Relays(t *testing.T) {
+	sender, _ := NewSphinx()
+	relays, nodes := makeRelays(t, 7)
+	msg := []byte("privacy test message 7 relays")
+	pkt, err := sender.Encode(msg, relays)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+
+	currentPacket := pkt
+	for i, node := range nodes {
+		nextHop, payload, err := node.Decode(currentPacket)
+		if err != nil {
+			t.Fatalf("hop %d: Decode failed: %v", i, err)
+		}
+
+		if i < len(nodes)-1 {
+			if nextHop != relays[i+1].URL {
+				t.Fatalf("hop %d: expected nextHop %q, got %q", i, relays[i+1].URL, nextHop)
+			}
+		} else {
+			if nextHop != "" {
+				t.Fatalf("final hop: expected no nextHop, got %q", nextHop)
+			}
+		}
+
+		if i < len(nodes)-1 {
+			var tryMsg string
+			if err := cbor.Unmarshal(payload, &tryMsg); err == nil && tryMsg == string(msg) {
+				t.Fatalf("hop %d: payload should not be readable as message", i)
+			}
+			var tryPkt OnionPacket
+			if err := cbor.Unmarshal(payload, &tryPkt); err == nil {
+				if tryPkt.Header.NextRelayURL.URL == relays[(i+2)%len(relays)].URL {
+					t.Fatalf("hop %d: payload should not be readable as next OnionPacket", i)
+				}
+			}
+		}
+
+		currentPacket = &OnionPacket{EncryptedPayload: payload}
+	}
+
+	if string(currentPacket.EncryptedPayload) != string(msg) {
+		t.Fatalf("final payload mismatch: got %q, want %q", currentPacket.EncryptedPayload, msg)
+	}
+}
