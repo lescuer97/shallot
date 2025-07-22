@@ -1,0 +1,9 @@
+# loop continuous-execution process-lifecycle
+The application in this repository is designed to run in a continuous loop and will not end the process automatically. This is important for understanding the app's execution model and lifecycle management.
+
+# nostr relay khatru sphinx encryption
+cmd/shallot is a Nostr relay implementation that uses the khatru framework and implements sphinx encryption for enhanced privacy and security.
+
+# nostr client go-nostr library
+nostr-client is a Nostr client implementation that uses the go-nostr library for interacting with Nostr relays.
+
