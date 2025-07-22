@@ -256,3 +256,37 @@ func TestOnionPrivacyAtEachHop7Relays(t *testing.T) {
 		t.Fatalf("final payload mismatch: got %q, want %q", currentPacket.EncryptedPayload, msg)
 	}
 }
+
+func TestSenderPubKeyConsistentThroughCircuit(t *testing.T) {
+	sender, _ := NewSphinx()
+	relays, nodes := makeRelays(t, 5)
+	msg := []byte("sender pubkey consistency test")
+	pkt, err := sender.Encode(msg, relays)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+
+	senderPubKey := sender.GetPublicKey().SerializeCompressed()
+	currentPacket := pkt
+	for i, node := range nodes {
+		// At each hop, check the header's SenderPubKey
+		headerPubKey := currentPacket.Header.SenderPubKey
+		if headerPubKey == nil || len(headerPubKey) != len(senderPubKey) || string(headerPubKey) != string(senderPubKey) {
+			t.Fatalf("hop %d: sender public key mismatch", i)
+		}
+
+		// Decode and try to unmarshal as OnionPacket for the next hop
+		_, payload, err := node.Decode(currentPacket)
+		if err != nil {
+			// Last hop, payload is not an OnionPacket
+			break
+		}
+		var inner OnionPacket
+		if err := cbor.Unmarshal(payload, &inner); err == nil {
+			currentPacket = &inner
+		} else {
+			// Last hop, payload is not an OnionPacket
+			break
+		}
+	}
+}
