@@ -1,4 +1,4 @@
-module github.com/user/shallot
+module github.com/lescuer97/shallot
 
 go 1.24.3
 

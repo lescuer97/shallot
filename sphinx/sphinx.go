@@ -76,12 +76,12 @@ type Payload struct {
 	Payload             []byte
 }
 
-func NewSphinx() (*Sphinx, error) {
+func NewSphinx() (Sphinx, error) {
 	privateKey, err := secp256k1.GeneratePrivateKey()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate private key: %w", err)
+		return Sphinx{}, fmt.Errorf("failed to generate private key: %w", err)
 	}
-	return &Sphinx{
+	return Sphinx{
 		privateKey: privateKey,
 		publicKey:  privateKey.PubKey(),
 	}, nil
