@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,6 +15,13 @@ import (
 )
 
 func main() {
+	// Parse command line flags
+	var (
+		port      = flag.String("port", "10023", "Port to listen on")
+		relayName = flag.String("name", "shallot", "Name of the relay")
+	)
+	flag.Parse()
+
 	relay := khatru.NewRelay()
 
 	sphinx, err := sphinx.NewSphinx()
@@ -21,7 +29,7 @@ func main() {
 		log.Panicf("could not generate sphinx keys")
 	}
 
-	relay.Info.Name = "shallot"
+	relay.Info.Name = *relayName
 	relay.Info.Description = "This is an onion capable relay"
 	relay.Info.PubKey = hex.EncodeToString(sphinx.GetPublicKey().SerializeCompressed())
 	relay.Info.Contact = "_"
@@ -64,11 +72,10 @@ func main() {
 	// })
 
 	// start the server
-	fmt.Println("running on :10023")
-	err = http.ListenAndServe(":10023", relay)
+	address := ":" + *port
+	fmt.Printf("Starting relay '%s' on %s\n", *relayName, address)
+	err = http.ListenAndServe(address, relay)
 	if err != nil {
 		log.Panicf("could not listen to server. %w", err)
-
 	}
-
 }
