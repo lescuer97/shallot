@@ -42,8 +42,8 @@ const (
 )
 
 type Sphinx struct {
-	privateKey *secp256k1.PrivateKey
-	publicKey  *secp256k1.PublicKey
+	PrivateKey *secp256k1.PrivateKey
+	PublicKey  *secp256k1.PublicKey
 }
 
 type Relay struct {
@@ -82,8 +82,8 @@ func NewSphinx() (Sphinx, error) {
 		return Sphinx{}, fmt.Errorf("failed to generate private key: %w", err)
 	}
 	return Sphinx{
-		privateKey: privateKey,
-		publicKey:  privateKey.PubKey(),
+		PrivateKey: privateKey,
+		PublicKey:  privateKey.PubKey(),
 	}, nil
 }
 
@@ -95,7 +95,7 @@ func NewRelay(pubKey *secp256k1.PublicKey, rawURL string) (*Relay, error) {
 }
 
 func (s *Sphinx) GetPublicKey() *secp256k1.PublicKey {
-	return s.publicKey
+	return s.PublicKey
 }
 
 // Helper to estimate the onion overhead for a given relay path
@@ -136,7 +136,7 @@ func (s *Sphinx) encodeOnion(payload []byte, relays []*Relay) (*OnionPacket, err
 		}
 
 		onionHeader := OnionHeader{
-			SenderPubKey: s.publicKey.SerializeCompressed(),
+			SenderPubKey: s.PublicKey.SerializeCompressed(),
 			NextRelayURL: nextRelay,
 		}
 
@@ -164,7 +164,7 @@ func (s *Sphinx) encodeOnion(payload []byte, relays []*Relay) (*OnionPacket, err
 	}
 
 	outerHeader := OnionHeader{
-		SenderPubKey: s.publicKey.SerializeCompressed(),
+		SenderPubKey: s.PublicKey.SerializeCompressed(),
 		NextRelayURL: *relays[0],
 	}
 
@@ -226,7 +226,7 @@ func (s *Sphinx) decryptLayer(payload []byte) ([]byte, *secp256k1.PublicKey, err
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse sender public key: %w", err)
 	}
-	sharedSecret := secp256k1.GenerateSharedSecret(s.privateKey, senderPubKey)
+	sharedSecret := secp256k1.GenerateSharedSecret(s.PrivateKey, senderPubKey)
 	key := sha256.Sum256(sharedSecret)
 	encryptedData := payload[33:]
 	decrypted, err := decrypt(encryptedData, key[:])

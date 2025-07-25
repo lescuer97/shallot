@@ -26,10 +26,10 @@ func NewCircuitHandler(s sphinx.Sphinx) *CircuitHandler {
 		sphinx:      s,
 		connections: make(map[string]*nostr.Relay),
 	}
-	
+
 	// Start a background goroutine to clean up stale connections
 	go handler.cleanupStaleConnections()
-	
+
 	return handler
 }
 
@@ -52,10 +52,10 @@ func (ch *CircuitHandler) HandleOnionEvent(ctx context.Context, event *nostr.Eve
 
 	// Validate packet size - all onion packets should be exactly MaxPacketSize
 	if len(packet.EncryptedPayload) != sphinx.MaxPacketSize {
-		log.Printf("ERROR: Invalid onion packet size. Expected %d bytes, got %d bytes", 
+		log.Printf("ERROR: Invalid onion packet size. Expected %d bytes, got %d bytes",
 			sphinx.MaxPacketSize, len(packet.EncryptedPayload))
 		log.Printf("Packet content (first 100 chars): %s...", string(packet.EncryptedPayload[:min(100, len(packet.EncryptedPayload))]))
-		return fmt.Errorf("invalid onion packet size: expected %d bytes, got %d bytes", 
+		return fmt.Errorf("invalid onion packet size: expected %d bytes, got %d bytes",
 			sphinx.MaxPacketSize, len(packet.EncryptedPayload))
 	}
 
@@ -86,7 +86,7 @@ func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL strin
 
 	// Validate payload size before creating the next packet
 	// Note: The payload here might not be MaxPacketSize yet as it will be padded when creating the next packet
-	
+
 	// Create a new onion packet for the next hop
 	nextPacket := sphinx.OnionPacket{
 		EncryptedPayload: payload,
@@ -113,13 +113,13 @@ func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL strin
 		// If publishing fails, the connection might be stale
 		// Close the connection and try to reconnect
 		ch.closeConnection(nextHopURL)
-		
+
 		// Try to get a new connection
 		relay, err = ch.getConnection(ctx, nextHopURL)
 		if err != nil {
 			return fmt.Errorf("failed to reconnect to %s: %w", nextHopURL, err)
 		}
-		
+
 		// Try publishing again
 		err = relay.Publish(ctx, nextEvent)
 		if err != nil {
@@ -135,13 +135,13 @@ func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL strin
 func (ch *CircuitHandler) processFinalPayload(ctx context.Context, payload []byte) error {
 	// Print the final payload/event as requested
 	log.Printf("Reached final destination. Decrypted payload: %s", string(payload))
-	
+
 	// In a real implementation, this might involve:
 	// 1. Parsing the payload as a Nostr event
 	// 2. Storing it in the relay's event store
 	// 3. Broadcasting it to connected clients
 	// For now, we just log it as requested
-	
+
 	return nil
 }
 
@@ -151,27 +151,27 @@ func (ch *CircuitHandler) getConnection(ctx context.Context, relayURL string) (*
 	ch.mu.RLock()
 	relay, exists := ch.connections[relayURL]
 	ch.mu.RUnlock()
-	
+
 	if exists && relay != nil {
 		// Check if the connection is still alive by checking ConnectionError
 		// Note: This is a simplified check. In practice, you might want more robust health checking.
 		return relay, nil
 	}
-	
+
 	// Create a new connection with timeout
 	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	
+
 	newRelay, err := nostr.RelayConnect(connectCtx, relayURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to relay %s: %w", relayURL, err)
 	}
-	
+
 	// Store the connection
 	ch.mu.Lock()
 	ch.connections[relayURL] = newRelay
 	ch.mu.Unlock()
-	
+
 	log.Printf("Created new connection to relay: %s", relayURL)
 	return newRelay, nil
 }
@@ -180,7 +180,7 @@ func (ch *CircuitHandler) getConnection(ctx context.Context, relayURL string) (*
 func (ch *CircuitHandler) closeConnection(relayURL string) {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
-	
+
 	if relay, exists := ch.connections[relayURL]; exists {
 		if relay != nil {
 			relay.Close()
@@ -193,7 +193,7 @@ func (ch *CircuitHandler) closeConnection(relayURL string) {
 func (ch *CircuitHandler) cleanupStaleConnections() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	
+
 	for range ticker.C {
 		ch.mu.Lock()
 		for relayURL, relay := range ch.connections {
@@ -211,7 +211,7 @@ func (ch *CircuitHandler) cleanupStaleConnections() {
 func (ch *CircuitHandler) Close() {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
-	
+
 	for relayURL, relay := range ch.connections {
 		if relay != nil {
 			relay.Close()

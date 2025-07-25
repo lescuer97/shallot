@@ -22,7 +22,7 @@ func TestOnionRoutingWithSphinx(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create relay1 sphinx: %v", err)
 	}
-	
+
 	relay2, err := sphinx.NewSphinx()
 	if err != nil {
 		t.Fatalf("Failed to create relay2 sphinx: %v", err)
@@ -36,7 +36,7 @@ func TestOnionRoutingWithSphinx(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create relay1 info: %v", err)
 	}
-	
+
 	relay2Info, err := sphinx.NewRelay(relay2.GetPublicKey(), relay2URL)
 	if err != nil {
 		t.Fatalf("Failed to create relay2 info: %v", err)
@@ -45,7 +45,7 @@ func TestOnionRoutingWithSphinx(t *testing.T) {
 	// Create circuit handler for relay1
 	handler1 := NewCircuitHandler(relay1)
 	defer handler1.Close()
-	
+
 	// Create circuit handler for relay2
 	handler2 := NewCircuitHandler(relay2)
 	defer handler2.Close()
@@ -78,28 +78,28 @@ func TestOnionRoutingWithSphinx(t *testing.T) {
 	// Note: This would normally try to connect to the next relay,
 	// but since we're testing, we'll just check that it processes without error
 	// In a real test, we'd mock the relay connections
-	
+
 	// For now, let's just verify the event structure is correct
 	if event.Kind != 720 {
 		t.Errorf("Expected event kind 720, got %d", event.Kind)
 	}
-	
+
 	if event.Content == "" {
 		t.Error("Event content should not be empty")
 	}
-	
+
 	// Verify we can decode the content
 	_, err = hex.DecodeString(event.Content)
 	if err != nil {
 		t.Errorf("Failed to decode event content: %v", err)
 	}
-	
+
 	// Test the utility functions work correctly with the packet
 	content, err := EncodeOnionPacketToEventContent(packet)
 	if err != nil {
 		t.Fatalf("Failed to encode packet to event content: %v", err)
 	}
-	
+
 	var decodedPacket sphinx.OnionPacket
 	err = DecodeOnionPacketFromEventContent(content, &decodedPacket)
 	if err != nil {

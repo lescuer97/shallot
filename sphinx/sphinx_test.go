@@ -7,9 +7,9 @@ import (
 	"github.com/fxamacker/cbor/v2"
 )
 
-func makeRelays(t *testing.T, n int) ([]*Relay, []*Sphinx) {
+func makeRelays(t *testing.T, n int) ([]*Relay, []Sphinx) {
 	relays := make([]*Relay, n)
-	nodes := make([]*Sphinx, n)
+	nodes := make([]Sphinx, n)
 	for i := 0; i < n; i++ {
 		node, err := NewSphinx()
 		if err != nil {

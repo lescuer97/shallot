@@ -12,7 +12,7 @@ func EncodeOnionPacketToEventContent(packet interface{}) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal onion packet: %w", err)
 	}
-	
+
 	return hex.EncodeToString(packetBytes), nil
 }
 
@@ -22,6 +22,6 @@ func DecodeOnionPacketFromEventContent(content string, packet interface{}) error
 	if err != nil {
 		return fmt.Errorf("failed to decode onion packet: %w", err)
 	}
-	
+
 	return json.Unmarshal(packetBytes, packet)
 }
