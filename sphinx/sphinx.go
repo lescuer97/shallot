@@ -203,7 +203,14 @@ func (s *Sphinx) Decode(packet *OnionPacket) (nextHopURL string, payload []byte,
 		}
 		inputPayload = inputPayload[:actualSize]
 	}
-	decrypted, _, err := s.decryptLayer(inputPayload)
+	
+	// Use the sender's public key from the onion header for decryption
+	senderPubKey, err := secp256k1.ParsePubKey(packet.Header.SenderPubKey)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to parse sender public key from header: %w", err)
+	}
+	
+	decrypted, err := s.decryptLayerWithKey(inputPayload, senderPubKey)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to decrypt layer: %w", err)
 	}
@@ -219,23 +226,20 @@ func (s *Sphinx) Decode(packet *OnionPacket) (nextHopURL string, payload []byte,
 	return "", decrypted, nil
 }
 
-func (s *Sphinx) decryptLayer(payload []byte) ([]byte, *secp256k1.PublicKey, error) {
+func (s *Sphinx) decryptLayerWithKey(payload []byte, senderPubKey *secp256k1.PublicKey) ([]byte, error) {
 	if len(payload) < 33 {
-		return nil, nil, fmt.Errorf("payload is too short")
+		return nil, fmt.Errorf("payload is too short")
 	}
-	senderPubKeyBytes := payload[:33]
-	senderPubKey, err := secp256k1.ParsePubKey(senderPubKeyBytes)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse sender public key: %w", err)
-	}
+	
+	// Skip the prepended public key and decrypt with the header's public key
 	sharedSecret := secp256k1.GenerateSharedSecret(s.PrivateKey, senderPubKey)
 	key := sha256.Sum256(sharedSecret)
-	encryptedData := payload[33:]
+	encryptedData := payload[33:] // Skip the prepended public key
 	decrypted, err := decrypt(encryptedData, key[:])
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to decrypt: %w", err)
+		return nil, fmt.Errorf("failed to decrypt: %w", err)
 	}
-	return decrypted, senderPubKey, nil
+	return decrypted, nil
 }
 
 func addPadding(data []byte, targetSize int) ([]byte, error) {

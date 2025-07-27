@@ -58,8 +58,9 @@ The nostr-client can send both regular and onion-routed messages:
 When sending an onion-routed message, the client will:
 1. Automatically query for NIP-66 relay announcements from ws://localhost:4869
 2. Filter for relays that support onion routing (kind 720)
-3. Use the first available onion-capable relay for routing
-4. Panic if no onion-capable relays are found
+3. If two or more distinct relays are found, use both for a two-hop circuit
+4. If only one relay is found, use it for a single-hop circuit
+5. If no relays are found, panic
 
 Client flags:
 - `-onion`: Send as onion-routed message (kind 720)

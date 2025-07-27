@@ -68,41 +68,55 @@ func main() {
 		// Filter for onion-capable relays
 		onionRelays := utils.GetOnionCapableRelays(relays)
 		
-		if len(onionRelays) == 0 {
-			log.Fatal("No onion-capable relays found via NIP-66 discovery")
+		relayCount := len(onionRelays)
+		if relayCount == 0 {
+			log.Panic("No onion-capable relays found via NIP-66 discovery")
+		} else if relayCount == 1 {
+			fmt.Printf("Found only one onion-capable relay, using single hop\n")
+		} else {
+			fmt.Printf("Found %d onion-capable relays, using two distinct relays\n", relayCount)
 		}
 
-		// Use the first two onion-capable relays
-		var firstRelay, secondRelay utils.RelayInfo
-		var firstRelayURL, secondRelayURL string
-		count := 0
+		// Collect relays
+		var relaysList []struct {
+			URL  string
+			Info utils.RelayInfo
+		}
 		
 		for url, relayInfo := range onionRelays {
-			if count == 0 {
-				firstRelay = relayInfo
-				firstRelayURL = url
-			} else if count == 1 {
-				secondRelay = relayInfo
-				secondRelayURL = url
-				break
+			relaysList = append(relaysList, struct {
+				URL  string
+				Info utils.RelayInfo
+			}{URL: url, Info: relayInfo})
+		}
+
+		// Handle relay selection based on count
+		if relayCount >= 2 {
+			// Use two distinct relays
+			firstRelay := relaysList[0]
+			secondRelay := relaysList[1]
+			
+			fmt.Printf("Using relays for onion routing:\n")
+			fmt.Printf("  First hop: %s\n", firstRelay.URL)
+			fmt.Printf("  Second hop: %s\n", secondRelay.URL)
+			
+			// Send as onion-routed message through two relays
+			err = sendOnionMessage(ctx, relay, sk, pub, *message, firstRelay.URL, firstRelay.Info.PublicKey, secondRelay.URL, secondRelay.Info.PublicKey)
+			if err != nil {
+				log.Fatal("Failed to send onion message:", err)
 			}
-			count++
-		}
-
-		// If we only found one relay, use it for both hops
-		if secondRelayURL == "" {
-			secondRelay = firstRelay
-			secondRelayURL = firstRelayURL
-		}
-
-		fmt.Printf("Using relays for onion routing:\n")
-		fmt.Printf("  First hop: %s\n", firstRelayURL)
-		fmt.Printf("  Second hop: %s\n", secondRelayURL)
-		
-		// Send as onion-routed message through two relays
-		err = sendOnionMessage(ctx, relay, sk, pub, *message, firstRelayURL, firstRelay.PublicKey, secondRelayURL, secondRelay.PublicKey)
-		if err != nil {
-			log.Fatal("Failed to send onion message:", err)
+		} else {
+			// Use single relay
+			firstRelay := relaysList[0]
+			
+			fmt.Printf("Using relay for single hop onion routing:\n")
+			fmt.Printf("  Single hop: %s\n", firstRelay.URL)
+			
+			// Send as onion-routed message through single relay
+			err = sendOnionMessageSingle(ctx, relay, sk, pub, *message, firstRelay.URL, firstRelay.Info.PublicKey)
+			if err != nil {
+				log.Fatal("Failed to send onion message:", err)
+			}
 		}
 	} else {
 		// Send as regular message
@@ -244,6 +258,91 @@ func sendOnionMessage(ctx context.Context, relay *nostr.Relay, sk, pub, message,
 		Content:   content,
 		Tags: nostr.Tags{
 			[]string{"relay", firstRelayURL},
+		},
+	}
+
+	// Sign the event
+	err = event.Sign(sk)
+	if err != nil {
+		return fmt.Errorf("failed to sign onion event: %w", err)
+	}
+
+	fmt.Printf("Created and signed onion event:\n")
+	fmt.Printf("Event ID: %s\n", event.ID)
+	fmt.Printf("Kind: %d\n", event.Kind)
+	fmt.Printf("Content length: %d characters (hex encoded)\n", len(event.Content))
+	fmt.Printf("Created At: %s\n", time.Unix(int64(event.CreatedAt), 0).Format(time.RFC3339))
+	fmt.Println()
+
+	// Publish the onion event
+	fmt.Printf("Publishing onion event to relay...\n")
+
+	err = relay.Publish(ctx, event)
+	if err != nil {
+		fmt.Printf("❌ Onion event publishing failed: %v\n", err)
+		return fmt.Errorf("failed to publish onion event: %w", err)
+	}
+
+	fmt.Printf("✅ Onion event published successfully!\n")
+	
+	// Note: We don't try to fetch it back since onion events are handled differently
+	// and may not be stored in the same way as regular events
+	
+	return nil
+}
+
+// sendOnionMessageSingle sends an onion-routed message using a single relay
+func sendOnionMessageSingle(ctx context.Context, relay *nostr.Relay, sk, pub, message, relayURL string, relayPubKey []byte) error {
+	fmt.Printf("Sending onion-routed message: %s\n", message)
+	fmt.Printf("Using relay as single hop: %s\n", relayURL)
+	
+	// Create a Sphinx instance for creating the onion packet
+	sphinxInstance, err := sphinx.NewSphinx()
+	if err != nil {
+		return fmt.Errorf("failed to create sphinx instance: %w", err)
+	}
+
+	// Create a relay info for this relay (acting as the single hop in the circuit)
+	// Convert the 32-byte X-only public key to a full secp256k1 public key
+	fullPubKey, err := secp256k1.ParsePubKey(append([]byte{0x02}, relayPubKey...))
+	if err != nil {
+		return fmt.Errorf("failed to parse relay public key: %w", err)
+	}
+	
+	relayInfo, err := sphinx.NewRelay(fullPubKey, relayURL)
+	if err != nil {
+		return fmt.Errorf("failed to create relay info: %w", err)
+	}
+
+	// Create a circuit with just this relay as the single hop
+	relays := []*sphinx.Relay{relayInfo}
+
+	// Convert the message to bytes
+	messageBytes := []byte(message)
+
+	// Use the Sphinx module to encode the message through the circuit
+	onionPacket, err := sphinxInstance.Encode(messageBytes, relays)
+	if err != nil {
+		return fmt.Errorf("failed to encode message through onion circuit: %w", err)
+	}
+
+	// Marshal the onion packet to JSON
+	packetBytes, err := json.Marshal(onionPacket)
+	if err != nil {
+		return fmt.Errorf("failed to marshal onion packet: %w", err)
+	}
+
+	// Convert to hex string for Nostr event content
+	content := hex.EncodeToString(packetBytes)
+
+	// Create a Nostr event for the onion message
+	event := nostr.Event{
+		PubKey:    pub,
+		CreatedAt: nostr.Now(),
+		Kind:      720, // Onion routing message
+		Content:   content,
+		Tags: nostr.Tags{
+			[]string{"relay", relayURL},
 		},
 	}
 
