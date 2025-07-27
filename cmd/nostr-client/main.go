@@ -72,19 +72,35 @@ func main() {
 			log.Fatal("No onion-capable relays found via NIP-66 discovery")
 		}
 
-		// Use the first available onion-capable relay
-		var firstRelay utils.RelayInfo
-		var firstRelayURL string
+		// Use the first two onion-capable relays
+		var firstRelay, secondRelay utils.RelayInfo
+		var firstRelayURL, secondRelayURL string
+		count := 0
+		
 		for url, relayInfo := range onionRelays {
-			firstRelay = relayInfo
-			firstRelayURL = url
-			break
+			if count == 0 {
+				firstRelay = relayInfo
+				firstRelayURL = url
+			} else if count == 1 {
+				secondRelay = relayInfo
+				secondRelayURL = url
+				break
+			}
+			count++
 		}
 
-		fmt.Printf("Using relay %s for onion routing\n", firstRelayURL)
+		// If we only found one relay, use it for both hops
+		if secondRelayURL == "" {
+			secondRelay = firstRelay
+			secondRelayURL = firstRelayURL
+		}
+
+		fmt.Printf("Using relays for onion routing:\n")
+		fmt.Printf("  First hop: %s\n", firstRelayURL)
+		fmt.Printf("  Second hop: %s\n", secondRelayURL)
 		
-		// Send as onion-routed message
-		err = sendOnionMessage(ctx, relay, sk, pub, *message, firstRelayURL, firstRelay.PublicKey)
+		// Send as onion-routed message through two relays
+		err = sendOnionMessage(ctx, relay, sk, pub, *message, firstRelayURL, firstRelay.PublicKey, secondRelayURL, secondRelay.PublicKey)
 		if err != nil {
 			log.Fatal("Failed to send onion message:", err)
 		}
@@ -163,9 +179,9 @@ func sendRegularMessage(ctx context.Context, relay *nostr.Relay, sk, pub, messag
 }
 
 // sendOnionMessage sends an onion-routed message using the Sphinx module
-func sendOnionMessage(ctx context.Context, relay *nostr.Relay, sk, pub, message, relayURL string, relayPubKey []byte) error {
+func sendOnionMessage(ctx context.Context, relay *nostr.Relay, sk, pub, message, firstRelayURL string, firstRelayPubKey []byte, secondRelayURL string, secondRelayPubKey []byte) error {
 	fmt.Printf("Sending onion-routed message: %s\n", message)
-	fmt.Printf("Using relay as single hop: %s\n", relayURL)
+	fmt.Printf("Using relays as circuit: %s -> %s\n", firstRelayURL, secondRelayURL)
 	
 	// Create a Sphinx instance for creating the onion packet
 	sphinxInstance, err := sphinx.NewSphinx()
@@ -173,22 +189,34 @@ func sendOnionMessage(ctx context.Context, relay *nostr.Relay, sk, pub, message,
 		return fmt.Errorf("failed to create sphinx instance: %w", err)
 	}
 
-	// Create a relay info for this relay (acting as the single hop in the circuit)
-	// Use the actual relay's public key from NIP-66 discovery
+	// Create relay info for the first relay in the circuit
 	// Convert the 32-byte X-only public key to a full secp256k1 public key
-	fullPubKey, err := secp256k1.ParsePubKey(append([]byte{0x02}, relayPubKey...))
+	firstFullPubKey, err := secp256k1.ParsePubKey(append([]byte{0x02}, firstRelayPubKey...))
 	if err != nil {
-		return fmt.Errorf("failed to parse relay public key: %w", err)
+		return fmt.Errorf("failed to parse first relay public key: %w", err)
 	}
 	
-	relayInfo, err := sphinx.NewRelay(fullPubKey, relayURL)
+	firstRelayInfo, err := sphinx.NewRelay(firstFullPubKey, firstRelayURL)
 	if err != nil {
-		return fmt.Errorf("failed to create relay info: %w", err)
+		return fmt.Errorf("failed to create first relay info: %w", err)
 	}
 
-	// Create a circuit with just this relay as the single hop
-	// In a more complex implementation, we would have multiple relays
-	relays := []*sphinx.Relay{relayInfo}
+	// Create relay info for the second relay in the circuit
+	// Convert the 32-byte X-only public key to a full secp256k1 public key
+	secondFullPubKey, err := secp256k1.ParsePubKey(append([]byte{0x02}, secondRelayPubKey...))
+	if err != nil {
+		return fmt.Errorf("failed to parse second relay public key: %w", err)
+	}
+	
+	secondRelayInfo, err := sphinx.NewRelay(secondFullPubKey, secondRelayURL)
+	if err != nil {
+		return fmt.Errorf("failed to create second relay info: %w", err)
+	}
+
+	// Create a circuit with both relays
+	relays := []*sphinx.Relay{firstRelayInfo, secondRelayInfo}
+
+	log.Printf("\n relays: %+v", relays)
 
 	// Convert the message to bytes
 	messageBytes := []byte(message)
@@ -215,7 +243,7 @@ func sendOnionMessage(ctx context.Context, relay *nostr.Relay, sk, pub, message,
 		Kind:      720, // Onion routing message
 		Content:   content,
 		Tags: nostr.Tags{
-			[]string{"relay", relayURL},
+			[]string{"relay", firstRelayURL},
 		},
 	}
 

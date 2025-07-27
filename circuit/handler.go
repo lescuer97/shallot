@@ -69,6 +69,7 @@ func (ch *CircuitHandler) HandleOnionEvent(ctx context.Context, event *nostr.Eve
 
 	// If there's a next hop, forward the message
 	if nextHopURL != "" {
+		log.Println("forwarding to next Hop")
 		return ch.forwardToNextHop(ctx, nextHopURL, payload)
 	}
 
