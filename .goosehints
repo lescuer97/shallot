@@ -1,0 +1,21 @@
+# Project structure 
+
+when starting a new session you should analyze the project using the repomix tool.  
+
+The whole project is written in go.
+
+## Modules
+- ./sphinx - is a module used for encryption and decryption of blobs of data for onion routed encryption. 
+- ./cmd/nostr-client/  - is an application to run a nostr client. 
+- ./cmd/shallot/ - is an application to run a nostr relay using the kathru library that supports onion routing.
+- ./circuit - is the internal library that handles routing for the onion relay and mantaining connections and sessions for routing. 
+
+
+# Development practices
+- use if statements with panics inside for testing things that should never happen in functions. 
+- check for broken tests when finishing a task
+- always use the standard testing go library.
+- never commit any code changes.
+
+
+
