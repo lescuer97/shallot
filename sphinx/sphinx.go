@@ -160,7 +160,7 @@ func (s *Sphinx) encodeOnion(payload []byte, relays []*Relay) (*OnionPacket, err
 		}
 	}
 
-	finalPaddedPayload, err := addPadding(innerPayload, MaxPacketSize)
+	finalPaddedPayload, err := AddPadding(innerPayload, MaxPacketSize)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +240,7 @@ func (s *Sphinx) decryptLayerWithKey(payload []byte, senderPubKey *secp256k1.Pub
 	return decrypted, nil
 }
 
-func addPadding(data []byte, targetSize int) ([]byte, error) {
+func AddPadding(data []byte, targetSize int) ([]byte, error) {
 	if len(data) > targetSize {
 		return nil, fmt.Errorf("data size %d exceeds target size %d", len(data), targetSize)
 	}

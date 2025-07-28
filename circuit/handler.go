@@ -89,30 +89,35 @@ func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL strin
 	// Note: The payload here might not be MaxPacketSize yet as it will be padded when creating the next packet
 
 	// Create a new onion packet for the next hop
-	nextPacket := sphinx.OnionPacket{
-		Header: sphinx.OnionHeader{
-			SenderPubKey:    ch.sphinx.GetPublicKey().SerializeCompressed(),
-			NextRelayURL:    sphinx.Relay{}, // Will be set when the next relay processes it
-			EncryptedLength: len(payload),   // Set the length of the actual content
-		},
-		EncryptedPayload: payload,
-	}
 
 	// Marshal the packet
-	packetBytes, err := json.Marshal(nextPacket)
+	// packetBytes, err := json.Marshal(nextPacket)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to marshal onion packet: %w", err)
+	// }
+
+	paddedBytes, err := sphinx.AddPadding(payload, sphinx.MaxPacketSize)
 	if err != nil {
-		return fmt.Errorf("failed to marshal onion packet: %w", err)
+		return fmt.Errorf("could not add padding to the relaying event: %w", err)
 	}
 
 	// Create a Nostr event for the next hop
 	nextEvent := nostr.Event{
-		PubKey:    hex.EncodeToString(ch.sphinx.GetPublicKey().SerializeCompressed()),
 		CreatedAt: nostr.Now(),
 		Kind:      720, // Onion routing message
 		Tags:      []nostr.Tag{},
-		Content:   hex.EncodeToString(packetBytes),
+		Content:   hex.EncodeToString(paddedBytes),
 	}
 
+
+
+		// Sign the event
+		err = nextEvent.Sign(hex.EncodeToString(ch.sphinx.PrivateKey.Serialize()))
+		if err != nil {
+			return fmt.Errorf("Failed to sign onion event: %w", err)
+		}
+
+	log.Printf("\n nextEvent %+v", nextEvent)
 	// Publish the event to the next relay
 	err = relay.Publish(ctx, nextEvent)
 	if err != nil {
