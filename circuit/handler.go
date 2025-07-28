@@ -13,12 +13,22 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 )
 
+// Session represents a single onion routing session
+type Session struct {
+	ID                   string // Unique session identifier
+	OriginalSenderPubKey []byte // Original sender's public key
+	PreviousRelayURL     string // URL of the previous relay in the circuit
+	PreviousRelayPubKey  []byte // Public key of the previous relay
+	NextRelayURL         string // URL of the next relay (can be empty for final destination)
+	CreatedAt            time.Time
+}
+
 // CircuitHandler manages onion routing circuits for Nostr events
 type CircuitHandler struct {
-	sphinx             sphinx.Sphinx
-	connections        map[string]*nostr.Relay
-	mu                 sync.RWMutex
-	originalSenderKey  []byte // Store the original sender's public key
+	sphinx      sphinx.Sphinx
+	connections map[string]*nostr.Relay
+	sessions    map[string]*Session // Map of session ID to Session
+	mu          sync.RWMutex
 }
 
 // NewCircuitHandler creates a new circuit handler
@@ -26,6 +36,7 @@ func NewCircuitHandler(s sphinx.Sphinx) *CircuitHandler {
 	handler := &CircuitHandler{
 		sphinx:      s,
 		connections: make(map[string]*nostr.Relay),
+		sessions:    make(map[string]*Session),
 	}
 
 	// Start a background goroutine to clean up stale connections
@@ -60,8 +71,23 @@ func (ch *CircuitHandler) HandleOnionEvent(ctx context.Context, event *nostr.Eve
 			sphinx.MaxPacketSize, len(packet.EncryptedPayload))
 	}
 
-	// Store the original sender's public key
-	ch.originalSenderKey = packet.Header.SenderPubKey
+	// Create or retrieve session for this onion packet
+	sessionID := hex.EncodeToString(packet.Header.SenderPubKey)
+	ch.mu.Lock()
+	session, exists := ch.sessions[sessionID]
+	if !exists {
+		// Create new session
+		session = &Session{
+			ID:                   sessionID,
+			OriginalSenderPubKey: packet.Header.SenderPubKey,
+			PreviousRelayURL:     "", // Will be populated by previous relay
+			PreviousRelayPubKey:  nil, // Will be populated by previous relay
+			NextRelayURL:         "", // Will be populated after decryption
+			CreatedAt:            time.Now(),
+		}
+		ch.sessions[sessionID] = session
+	}
+	ch.mu.Unlock()
 
 	// Decrypt the onion layer
 	nextHopURL, payload, err := ch.sphinx.Decode(&packet)
@@ -69,12 +95,17 @@ func (ch *CircuitHandler) HandleOnionEvent(ctx context.Context, event *nostr.Eve
 		return fmt.Errorf("failed to decode onion packet: %w", err)
 	}
 
+	// Update session with next hop information
+	ch.mu.Lock()
+	session.NextRelayURL = nextHopURL
+	ch.mu.Unlock()
+
 	log.Printf("Decoded onion packet. Next hop: %s, Is final: %t", nextHopURL, nextHopURL == "")
 
 	// If there's a next hop, forward the message
 	if nextHopURL != "" {
 		log.Println("forwarding to next Hop")
-		return ch.forwardToNextHop(ctx, nextHopURL, payload, ch.originalSenderKey)
+		return ch.forwardToNextHop(ctx, nextHopURL, payload, session.OriginalSenderPubKey)
 	}
 
 	// If this is the final destination, process the inner payload
