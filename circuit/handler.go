@@ -15,9 +15,10 @@ import (
 
 // CircuitHandler manages onion routing circuits for Nostr events
 type CircuitHandler struct {
-	sphinx      sphinx.Sphinx
-	connections map[string]*nostr.Relay
-	mu          sync.RWMutex
+	sphinx             sphinx.Sphinx
+	connections        map[string]*nostr.Relay
+	mu                 sync.RWMutex
+	originalSenderKey  []byte // Store the original sender's public key
 }
 
 // NewCircuitHandler creates a new circuit handler
@@ -59,6 +60,9 @@ func (ch *CircuitHandler) HandleOnionEvent(ctx context.Context, event *nostr.Eve
 			sphinx.MaxPacketSize, len(packet.EncryptedPayload))
 	}
 
+	// Store the original sender's public key
+	ch.originalSenderKey = packet.Header.SenderPubKey
+
 	// Decrypt the onion layer
 	nextHopURL, payload, err := ch.sphinx.Decode(&packet)
 	if err != nil {
@@ -70,7 +74,7 @@ func (ch *CircuitHandler) HandleOnionEvent(ctx context.Context, event *nostr.Eve
 	// If there's a next hop, forward the message
 	if nextHopURL != "" {
 		log.Println("forwarding to next Hop")
-		return ch.forwardToNextHop(ctx, nextHopURL, payload)
+		return ch.forwardToNextHop(ctx, nextHopURL, payload, ch.originalSenderKey)
 	}
 
 	// If this is the final destination, process the inner payload
@@ -78,44 +82,52 @@ func (ch *CircuitHandler) HandleOnionEvent(ctx context.Context, event *nostr.Eve
 }
 
 // forwardToNextHop sends the decrypted payload to the next relay in the circuit
-func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL string, payload []byte) error {
+func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL string, payload []byte, originalSenderKey []byte) error {
 	// Get or create a connection to the next relay (ensuring only one connection per relay)
 	relay, err := ch.getConnection(ctx, nextHopURL)
 	if err != nil {
 		return fmt.Errorf("failed to get connection to %s: %w", nextHopURL, err)
 	}
 
-	// Validate payload size before creating the next packet
-	// Note: The payload here might not be MaxPacketSize yet as it will be padded when creating the next packet
+	// Add padding to ensure all packets are the same size for anonymity
+	paddedPayload, err := sphinx.AddPadding(payload, sphinx.MaxPacketSize)
+	if err != nil {
+		return fmt.Errorf("failed to add padding to payload: %w", err)
+	}
 
-	// Create a new onion packet for the next hop
+	// Create a new onion packet for the next hop with proper header
+	nextPacket := sphinx.OnionPacket{
+		Header: sphinx.OnionHeader{
+			SenderPubKey:    originalSenderKey,
+			NextRelayURL:    sphinx.Relay{}, // Will be set when the next relay processes it
+			EncryptedLength: len(payload),   // Set the length of the actual content (before padding)
+		},
+		EncryptedPayload: paddedPayload, // Send the padded payload
+	}
 
 	// Marshal the packet
-	// packetBytes, err := json.Marshal(nextPacket)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to marshal onion packet: %w", err)
-	// }
-
-	paddedBytes, err := sphinx.AddPadding(payload, sphinx.MaxPacketSize)
+	packetBytes, err := json.Marshal(nextPacket)
 	if err != nil {
-		return fmt.Errorf("could not add padding to the relaying event: %w", err)
+		return fmt.Errorf("failed to marshal onion packet: %w", err)
 	}
+
+	// Convert to hex string for Nostr event content
+	content := hex.EncodeToString(packetBytes)
 
 	// Create a Nostr event for the next hop
 	nextEvent := nostr.Event{
+		PubKey:    hex.EncodeToString(ch.sphinx.GetPublicKey().SerializeCompressed()),
 		CreatedAt: nostr.Now(),
 		Kind:      720, // Onion routing message
 		Tags:      []nostr.Tag{},
-		Content:   hex.EncodeToString(paddedBytes),
+		Content:   content,
 	}
 
-
-
-		// Sign the event
-		err = nextEvent.Sign(hex.EncodeToString(ch.sphinx.PrivateKey.Serialize()))
-		if err != nil {
-			return fmt.Errorf("Failed to sign onion event: %w", err)
-		}
+	// Sign the event
+	err = nextEvent.Sign(hex.EncodeToString(ch.sphinx.PrivateKey.Serialize()))
+	if err != nil {
+		return fmt.Errorf("Failed to sign onion event: %w", err)
+	}
 
 	log.Printf("\n nextEvent %+v", nextEvent)
 	// Publish the event to the next relay
