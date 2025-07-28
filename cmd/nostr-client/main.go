@@ -88,7 +88,6 @@ func main() {
 		var sphinxRelays []*sphinx.Relay
 		var relayURLs []string
 		
-		fmt.Println("\n=== Onion Routing Circuit ===")
 		for i, relayData := range relaysList {
 			// Convert the 32-byte X-only public key to a full secp256k1 public key
 			fullPubKey, err := secp256k1.ParsePubKey(append([]byte{0x02}, relayData.Info.PublicKey...))
@@ -112,42 +111,6 @@ func main() {
 			fmt.Printf("%s: %s\n", hopName, relayData.URL)
 		}
 		
-		fmt.Println("\nEncryption Order (outermost to innermost):")
-		for i := len(relaysList) - 1; i >= 0; i-- {
-			hopNum := len(relaysList) - i
-			if i == len(relaysList)-1 {
-				fmt.Printf("%d. Encrypt with Destination's key (%s)\n", hopNum, relayURLs[i])
-			} else {
-				fmt.Printf("%d. Encrypt with Relay %d's key (%s)\n", hopNum, i+1, relayURLs[i])
-			}
-		}
-		fmt.Println("5. Add padding to create constant-size packet")
-		
-		fmt.Println("\nDecryption Order (at each relay):")
-		for i := 0; i < len(relaysList); i++ {
-			hopName := fmt.Sprintf("Relay %d", i+1)
-			if i == len(relaysList)-1 {
-				hopName = "Destination Relay"
-			}
-			
-			if i < len(relaysList)-1 {
-				fmt.Printf("%d. %s decrypts layer and forwards to next hop\n", i+1, hopName)
-			} else {
-				fmt.Printf("%d. %s decrypts final layer and processes payload\n", i+1, hopName)
-			}
-		}
-		fmt.Println()
-		
-		if len(relaysList) >= 2 {
-			// Use two relays
-			fmt.Printf("Using relays for onion routing:\n")
-			fmt.Printf("  First hop: %s\n", relayURLs[0])
-			fmt.Printf("  Second hop: %s\n", relayURLs[1])
-		} else {
-			// Use single relay
-			fmt.Printf("Using relay for single hop onion routing:\n")
-			fmt.Printf("  Single hop: %s\n", relayURLs[0])
-		}
 		
 		// Connect to the first relay for sending the onion message
 		firstHopRelay, err := nostr.RelayConnect(ctx, relayURLs[0])
@@ -197,19 +160,8 @@ func main() {
 			log.Fatal("Failed to sign onion event:", err)
 		}
 
-		fmt.Printf("Created and signed onion event:\n")
-		fmt.Printf("Event ID: %s\n", event.ID)
-		fmt.Printf("Kind: %d\n", event.Kind)
-		fmt.Printf("Content length: %d characters (hex encoded)\n", len(event.Content))
-		fmt.Printf("Created At: %s\n", time.Unix(int64(event.CreatedAt), 0).Format(time.RFC3339))
-		fmt.Println()
-
-		// Publish the onion event
-		fmt.Printf("Publishing onion event to relay...\n")
-
 		err = firstHopRelay.Publish(ctx, event)
 		if err != nil {
-			fmt.Printf("❌ Onion event publishing failed: %v\n", err)
 			log.Fatal("Failed to publish onion event:", err)
 		}
 
@@ -217,7 +169,6 @@ func main() {
 	} else {
 		// Send as regular message using the first discovered relay instead of default
 		// First discover relays to get the first one
-		fmt.Printf("\n=== Discovering Relays for Regular Message ===\n")
 		relays, err := utils.QueryNIP66Relays("ws://localhost:4869")
 		if err != nil {
 			log.Fatal("Failed to query relays:", err)
@@ -272,25 +223,12 @@ func sendRegularMessage(ctx context.Context, relay *nostr.Relay, sk, pub, messag
 		return fmt.Errorf("failed to sign event: %w", err)
 	}
 
-	fmt.Printf("Created and signed test event:\n")
-	fmt.Printf("Event ID: %s\n", event.ID)
-	fmt.Printf("Kind: %d\n", event.Kind)
-	fmt.Printf("Content: %s\n", event.Content)
-	fmt.Printf("Created At: %s\n", time.Unix(int64(event.CreatedAt), 0).Format(time.RFC3339))
-	fmt.Println()
-
-	// Publish the event
-	fmt.Printf("Publishing event to relay...\n")
-
 	err = relay.Publish(ctx, event)
 	if err != nil {
 		fmt.Printf("❌ Event publishing failed: %v\n", err)
 	} else {
 		fmt.Printf("✅ Event published successfully!\n")
 	}
-
-	// Try to fetch the event back to verify it was stored
-	fmt.Printf("\nAttempting to fetch the event back from relay...\n")
 
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{
 		{
@@ -304,9 +242,6 @@ func sendRegularMessage(ctx context.Context, relay *nostr.Relay, sk, pub, messag
 	// Wait for events with timeout
 	select {
 	case receivedEvent := <-sub.Events:
-		fmt.Printf("✅ Successfully retrieved event from relay!\n")
-		fmt.Printf("Retrieved Event ID: %s\n", receivedEvent.ID)
-		fmt.Printf("Retrieved Content: %s\n", receivedEvent.Content)
 		if receivedEvent.ID == event.ID {
 			fmt.Printf("🎉 Event IDs match - round trip successful!\n")
 		}
