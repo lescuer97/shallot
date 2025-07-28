@@ -49,7 +49,6 @@ func main() {
 	store := make(map[string]*nostr.Event, 120)
 	relay.StoreEvent = append(relay.StoreEvent,
 		func(ctx context.Context, event *nostr.Event) error {
-			log.Printf("\n event %+v", event)
 			store[event.ID] = event
 			return nil
 		},
