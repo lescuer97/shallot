@@ -71,10 +71,17 @@ eventLoop:
 				relays[relayInfo.RelayURL] = relayInfo
 			}
 			
+		case <-sub.EndOfStoredEvents:
+			// Break the loop when we receive EOSE (End of Stored Events)
+			fmt.Println("Received EOSE, finishing query early")
+			break eventLoop
+			
 		case <-timeout:
+			fmt.Println("Timeout reached, finishing query")
 			break eventLoop
 			
 		case <-ctx.Done():
+			fmt.Println("Context cancelled, finishing query")
 			break eventLoop
 		}
 	}
