@@ -4,15 +4,15 @@
 // - Support for up to 10 hops (configurable via NumMaxHops)
 // - Constant packet size (MaxPacketSize = 12KB) to prevent traffic analysis
 // - Proper padding handling that doesn't interfere with multi-hop routing
-// - Size preservation through the onion layers using length headers
+// - Size preservation through the onion layers using the EncryptedLength header field
 // - Uses Sphinx instance's private key for Diffie-Hellman key exchange instead of ephemeral keys
 //
 // Padding Strategy:
 // - ALL packets (initial and forwarded) are padded to exactly MaxPacketSize (12KB)
 // - This ensures that relay operators cannot correlate input and output packet sizes
-// - Padding is only removed at the final destination
+// - Padding is only removed at the final destination using the EncryptedLength field
 // - Inner layers preserve encrypted payloads for forwarding to next hops
-// - Original payload size is preserved using a 4-byte header
+// - Original payload size is preserved using the EncryptedLength header field
 //
 // Security Properties:
 // - Each relay can only decrypt its own layer
@@ -53,8 +53,9 @@ type Relay struct {
 
 // OnionHeader is always present and is used for routing and cryptography.
 type OnionHeader struct {
-	SenderPubKey []byte // 33 bytes, secp256k1 compressed
-	NextRelayURL Relay
+	SenderPubKey    []byte // 33 bytes, secp256k1 compressed
+	NextRelayURL    Relay
+	EncryptedLength int // Length of the actual encrypted content (excluding padding)
 }
 
 // OnionPacket is the wire format for all packets.
@@ -136,8 +137,9 @@ func (s *Sphinx) encodeOnion(payload []byte, relays []*Relay) (*OnionPacket, err
 		}
 
 		onionHeader := OnionHeader{
-			SenderPubKey: s.PublicKey.SerializeCompressed(),
-			NextRelayURL: nextRelay,
+			SenderPubKey:    s.PublicKey.SerializeCompressed(),
+			NextRelayURL:    nextRelay,
+			EncryptedLength: len(innerPayload), // Set the length of the actual content
 		}
 
 		if i != len(relays)-1 {
@@ -164,8 +166,9 @@ func (s *Sphinx) encodeOnion(payload []byte, relays []*Relay) (*OnionPacket, err
 	}
 
 	outerHeader := OnionHeader{
-		SenderPubKey: s.PublicKey.SerializeCompressed(),
-		NextRelayURL: *relays[0],
+		SenderPubKey:    s.PublicKey.SerializeCompressed(),
+		NextRelayURL:    *relays[0],
+		EncryptedLength: len(innerPayload), // Set the length of the actual content
 	}
 
 	return &OnionPacket{
@@ -192,16 +195,11 @@ func (s *Sphinx) encryptLayer(payload []byte, recipientPubKey *secp256k1.PublicK
 }
 
 func (s *Sphinx) Decode(packet *OnionPacket) (nextHopURL string, payload []byte, err error) {
+	// Extract the actual encrypted content based on the EncryptedLength field
 	inputPayload := packet.EncryptedPayload
-	if len(inputPayload) == MaxPacketSize {
-		actualSize := len(inputPayload)
-		for i := len(inputPayload) - 1; i >= 33; i-- {
-			if inputPayload[i] == 0x80 {
-				actualSize = i
-				break
-			}
-		}
-		inputPayload = inputPayload[:actualSize]
+	if len(inputPayload) == MaxPacketSize && packet.Header.EncryptedLength > 0 {
+		// Use the EncryptedLength to determine the actual content size
+		inputPayload = inputPayload[:packet.Header.EncryptedLength]
 	}
 	
 	// Use the sender's public key from the onion header for decryption
@@ -252,11 +250,9 @@ func addPadding(data []byte, targetSize int) ([]byte, error) {
 	}
 	padded := make([]byte, targetSize)
 	copy(padded[:len(data)], data)
-	if paddingSize > 0 {
-		padded[len(data)] = 0x80
-		for i := len(data) + 1; i < targetSize; i++ {
-			padded[i] = 0x00
-		}
+	// Fill the remaining bytes with cryptographically secure random data
+	if _, err := crand.Read(padded[len(data):]); err != nil {
+		return nil, fmt.Errorf("failed to generate random padding: %w", err)
 	}
 	return padded, nil
 }

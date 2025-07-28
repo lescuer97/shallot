@@ -7,3 +7,6 @@ cmd/shallot is a Nostr relay implementation that uses the khatru framework and i
 # nostr client go-nostr library
 nostr-client is a Nostr client implementation that uses the go-nostr library for interacting with Nostr relays.
 
+# ["sphinx", "onion-routing", "nostr", "circuit"]
+The shallot project implements onion routing for Nostr messages using Sphinx encryption. Key components: 1) Sphinx module handles onion packet creation/decryption with constant 12KB packet size for traffic analysis resistance, 2) cmd/nostr-client is a Nostr client that can send both regular messages and onion-routed messages (kind 720) using discovered NIP-66 relays, 3) cmd/shallot is a Nostr relay that handles onion routing by processing kind 720 events and forwarding them through the circuit, 4) circuit/handler.go manages relay connections and forwards onion packets between hops.
+

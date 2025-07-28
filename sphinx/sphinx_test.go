@@ -123,30 +123,51 @@ func TestEncodeOnion_MultiHopManualDecode(t *testing.T) {
 	if len(packet.EncryptedPayload) > MaxPacketSize {
 		t.Fatalf("initial packet size exceeds MTU: got %d, want <= %d", len(packet.EncryptedPayload), MaxPacketSize)
 	}
-	currentPayload := packet.EncryptedPayload
-	for i, node := range nodes {
-		if len(currentPayload) > MaxPacketSize {
-			t.Fatalf("hop %d: payload size exceeds MTU: got %d, want <= %d", i, len(currentPayload), MaxPacketSize)
-		}
-		nextHop, payload, err := node.Decode(&OnionPacket{
-			Header: OnionHeader{
-				SenderPubKey: sender.GetPublicKey().SerializeCompressed(),
-			},
-			EncryptedPayload: currentPayload,
-		})
-		if err != nil {
-			t.Fatalf("hop %d: Decode failed: %v", i, err)
-		}
-		currentPayload = payload
-		if i < len(nodes)-1 && nextHop == "" {
-			t.Fatalf("hop %d: expected nextHop, got empty", i)
-		}
-		if i == len(nodes)-1 && nextHop != "" {
-			t.Fatalf("final hop: expected no nextHop, got %q", nextHop)
-		}
+	
+	// Test first hop
+	nextHop1, payload1, err := nodes[0].Decode(packet)
+	if err != nil {
+		t.Fatalf("hop 0: Decode failed: %v", err)
 	}
-	if string(currentPayload) != string(msg) {
-		t.Fatalf("final payload mismatch: got %q, want %q", currentPayload, msg)
+	if nextHop1 != relays[1].URL {
+		t.Fatalf("hop 0: expected nextHop %q, got %q", relays[1].URL, nextHop1)
+	}
+	
+	// Test second hop
+	packet2 := &OnionPacket{
+		Header: OnionHeader{
+			SenderPubKey:    sender.GetPublicKey().SerializeCompressed(),
+			EncryptedLength: len(payload1),
+		},
+		EncryptedPayload: payload1,
+	}
+	nextHop2, payload2, err := nodes[1].Decode(packet2)
+	if err != nil {
+		t.Fatalf("hop 1: Decode failed: %v", err)
+	}
+	if nextHop2 != relays[2].URL {
+		t.Fatalf("hop 1: expected nextHop %q, got %q", relays[2].URL, nextHop2)
+	}
+	
+	// Test third hop
+	packet3 := &OnionPacket{
+		Header: OnionHeader{
+			SenderPubKey:    sender.GetPublicKey().SerializeCompressed(),
+			EncryptedLength: len(payload2),
+		},
+		EncryptedPayload: payload2,
+	}
+	nextHop3, payload3, err := nodes[2].Decode(packet3)
+	if err != nil {
+		t.Fatalf("hop 2: Decode failed: %v", err)
+	}
+	if nextHop3 != "" {
+		t.Fatalf("hop 2: expected no nextHop, got %q", nextHop3)
+	}
+	
+	// Check final payload
+	if string(payload3) != string(msg) {
+		t.Fatalf("final payload mismatch: got %q, want %q", payload3, msg)
 	}
 }
 

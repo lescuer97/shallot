@@ -90,6 +90,11 @@ func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL strin
 
 	// Create a new onion packet for the next hop
 	nextPacket := sphinx.OnionPacket{
+		Header: sphinx.OnionHeader{
+			SenderPubKey:    ch.sphinx.GetPublicKey().SerializeCompressed(),
+			NextRelayURL:    sphinx.Relay{}, // Will be set when the next relay processes it
+			EncryptedLength: len(payload),   // Set the length of the actual content
+		},
 		EncryptedPayload: payload,
 	}
 
