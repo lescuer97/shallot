@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
@@ -16,8 +17,60 @@ import (
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
 
+// Session represents a single onion routing session
+type Session struct {
+	ID                   string              // Unique session identifier
+	OriginalSenderPubKey []byte              // Original sender's public key
+	Relays               []SessionRelay      // All relays in the circuit with their information
+	CreatedAt            time.Time           // When the session was created
+	OnionPacket          *sphinx.OnionPacket // The original onion packet for decryption
+}
+
+// SessionRelay holds information about a relay used in a session
+type SessionRelay struct {
+	URL      string // Relay URL
+	PublicKey []byte // Relay's public key
+}
+
+// SessionManager manages onion routing sessions
+type SessionManager struct {
+	sessions map[string]*Session
+	mu       sync.RWMutex
+}
+
+// NewSessionManager creates a new session manager
+func NewSessionManager() *SessionManager {
+	return &SessionManager{
+		sessions: make(map[string]*Session),
+	}
+}
+
+// AddSession adds a new session to the manager
+func (sm *SessionManager) AddSession(session *Session) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.sessions[session.ID] = session
+}
+
+// GetSession retrieves a session by ID
+func (sm *SessionManager) GetSession(id string) (*Session, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	session, exists := sm.sessions[id]
+	return session, exists
+}
+
+// RemoveSession removes a session by ID
+func (sm *SessionManager) RemoveSession(id string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	delete(sm.sessions, id)
+}
+
 func main() {
-	// Parse command line flags
+	// Create a session manager
+	sessionManager := NewSessionManager()
+
 	var (
 		onion   = flag.Bool("onion", false, "Send as onion-routed message")
 		message = flag.String("message", "Hello from shallot nostr client! This is a test message.", "Message content")
@@ -134,6 +187,26 @@ func main() {
 			log.Fatal("Failed to encode message through onion circuit:", err)
 		}
 
+		// Create a session for this onion packet
+		var sessionRelays []SessionRelay
+		for i, relayData := range relaysList {
+			sessionRelays = append(sessionRelays, SessionRelay{
+				URL:      relayData.URL,
+				PublicKey: sphinxRelays[i].PublicKey.SerializeCompressed(),
+			})
+		}
+		
+		session := &Session{
+			ID:                   hex.EncodeToString(sphinxInstance.GetPublicKey().SerializeCompressed()),
+			OriginalSenderPubKey: sphinxInstance.GetPublicKey().SerializeCompressed(),
+			Relays:               sessionRelays,
+			CreatedAt:            time.Now(),
+			OnionPacket:          onionPacket,
+		}
+		
+		// Add the session to the session manager
+		sessionManager.AddSession(session)
+
 		// Marshal the onion packet to JSON
 		packetBytes, err := json.Marshal(onionPacket)
 		if err != nil {
@@ -166,6 +239,20 @@ func main() {
 		}
 
 		fmt.Printf("✅ Onion event published successfully!\n")
+		
+		// Set up subscription to listen for responses
+		sub, err := firstHopRelay.Subscribe(ctx, []nostr.Filter{
+			{
+				Kinds:   []int{720}, // Listen for onion routing messages
+				Authors: []string{relayURLs[0]}, // From the relay we sent to
+			},
+		})
+		if err != nil {
+			log.Printf("Failed to subscribe to relay: %v", err)
+		} else {
+			// Handle incoming messages in a separate goroutine
+			go handleIncomingMessages(ctx, sub, sessionManager, sphinxInstance)
+		}
 	} else {
 		// Send as regular message using the first discovered relay instead of default
 		// First discover relays to get the first one
@@ -204,6 +291,9 @@ func main() {
 	}
 
 	fmt.Printf("\nClient test completed!\n")
+	
+	// Keep the client running to receive responses
+	select {}
 }
 
 // sendRegularMessage sends a regular Nostr event
@@ -250,5 +340,67 @@ func sendRegularMessage(ctx context.Context, relay *nostr.Relay, sk, pub, messag
 	}
 
 	sub.Unsub()
+	return nil
+}
+
+// handleIncomingMessages processes incoming onion routing messages
+func handleIncomingMessages(ctx context.Context, sub *nostr.Subscription, sessionManager *SessionManager, sphinxInstance sphinx.Sphinx) {
+	for {
+		select {
+		case event := <-sub.Events:
+			// Process the incoming event
+			if err := processIncomingEvent(event, sessionManager, sphinxInstance); err != nil {
+				log.Printf("Error processing incoming event: %v", err)
+			}
+		case <-ctx.Done():
+			// Context cancelled, stop processing
+			return
+		}
+	}
+}
+
+// processIncomingEvent handles a single incoming Nostr event
+func processIncomingEvent(event *nostr.Event, sessionManager *SessionManager, sphinxInstance sphinx.Sphinx) error {
+	if event.Kind != 720 {
+		return fmt.Errorf("event is not an onion routing message (kind 720)")
+	}
+
+	// Decode the onion packet from the event content (hex encoded)
+	onionPacketBytes, err := hex.DecodeString(event.Content)
+	if err != nil {
+		return fmt.Errorf("failed to decode onion packet: %w", err)
+	}
+
+	var packet sphinx.OnionPacket
+	if err := json.Unmarshal(onionPacketBytes, &packet); err != nil {
+		return fmt.Errorf("failed to unmarshal onion packet: %w", err)
+	}
+
+	// Get the session for this packet
+	sessionID := hex.EncodeToString(packet.Header.SenderPubKey)
+	session, exists := sessionManager.GetSession(sessionID)
+	if !exists {
+		return fmt.Errorf("no session found for incoming packet with sender key: %s", sessionID)
+	}
+
+	// Decrypt the onion layer using the session's original onion packet
+	nextHopURL, payload, err := sphinxInstance.Decode(session.OnionPacket)
+	if err != nil {
+		return fmt.Errorf("failed to decode onion packet: %w", err)
+	}
+
+	log.Printf("Decoded onion packet. Next hop: %s, Is final: %t", nextHopURL, nextHopURL == "")
+
+	// If this is the final destination, process the inner payload
+	if nextHopURL == "" {
+		log.Printf("Reached final destination. Decrypted payload: %s", string(payload))
+		// Here you would process the final payload as needed
+		return nil
+	}
+
+	// If there's a next hop, we would forward the message
+	// (Implementation would depend on your specific requirements)
+	log.Printf("Message needs to be forwarded to: %s", nextHopURL)
+
 	return nil
 }
