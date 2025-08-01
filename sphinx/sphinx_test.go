@@ -2,6 +2,7 @@ package sphinx
 
 import (
 	"fmt"
+	"log"
 	"testing"
 
 	"github.com/fxamacker/cbor/v2"
@@ -29,11 +30,11 @@ func TestSimple3Relays(t *testing.T) {
 	sender, _ := NewSphinx()
 	relays, nodes := makeRelays(t, 3)
 	msg := []byte("hello world")
-	pkt, err := sender.Encode(msg, relays)
+	pkt, err := sender.Encode(msg, relays, Proxy, "test")
 	if err != nil {
 		t.Fatalf("Encode failed: %v", err)
 	}
-	
+
 	currentPacket := pkt
 	for _, node := range nodes {
 		nextHop, payload, err := node.Decode(currentPacket)
@@ -47,10 +48,19 @@ func TestSimple3Relays(t *testing.T) {
 			},
 			EncryptedPayload: payload,
 		}
+		// log.Printf("\n currentPacket: %+v", currentPacket)
 		_ = nextHop // not used in this test
 	}
-	if string(currentPacket.EncryptedPayload) != string(msg) {
-		t.Fatalf("final payload mismatch: got %q, want %q", currentPacket.EncryptedPayload, msg)
+
+	var lastHop LastHopPayload
+	err = cbor.Unmarshal(currentPacket.EncryptedPayload, &lastHop)
+	if err != nil {
+		t.Fatalf("could ot unmarshall the encrypted payload %+v", err)
+	}
+	log.Printf("\n lastHop: %+v", lastHop)
+
+	if string(lastHop.Payload) != string(msg) {
+		t.Errorf("final payload mismatch: got %q, want %q", currentPacket.EncryptedPayload, msg)
 	}
 }
 
@@ -62,7 +72,7 @@ func TestSphinxEncryptDecryptLayer_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encryptLayer failed: %v", err)
 	}
-	
+
 	// Create a mock OnionPacket with header containing sender's public key
 	mockPacket := &OnionPacket{
 		Header: OnionHeader{
@@ -70,16 +80,16 @@ func TestSphinxEncryptDecryptLayer_Success(t *testing.T) {
 		},
 		EncryptedPayload: encrypted,
 	}
-	
+
 	nextHop, decrypted, err := receiver.Decode(mockPacket)
 	if err != nil {
 		t.Fatalf("Decode failed: %v", err)
 	}
-	
+
 	if string(decrypted) != string(payload) {
 		t.Fatalf("decrypted payload mismatch: got %q, want %q", decrypted, payload)
 	}
-	
+
 	// nextHop should be empty since this isn't a full onion packet with inner structure
 	if nextHop != "" {
 		t.Fatalf("expected empty nextHop, got %q", nextHop)
@@ -95,7 +105,7 @@ func TestSphinxDecryptLayer_FailsWithWrongKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encryptLayer failed: %v", err)
 	}
-	
+
 	// Create a mock OnionPacket with header containing sender's public key
 	mockPacket := &OnionPacket{
 		Header: OnionHeader{
@@ -103,7 +113,7 @@ func TestSphinxDecryptLayer_FailsWithWrongKey(t *testing.T) {
 		},
 		EncryptedPayload: encrypted,
 	}
-	
+
 	// Try to decode with wrong receiver - this should fail because the header
 	// and the encryption are tied to the specific sender
 	_, _, err = wrongReceiver.Decode(mockPacket)
@@ -116,14 +126,14 @@ func TestEncodeOnion_MultiHopManualDecode(t *testing.T) {
 	sender, _ := NewSphinx()
 	relays, nodes := makeRelays(t, 3)
 	msg := []byte("manual multi-hop decode test")
-	packet, err := sender.Encode(msg, relays)
+	packet, err := sender.Encode(msg, relays, Proxy, "test")
 	if err != nil {
 		t.Fatalf("Encode failed: %v", err)
 	}
 	if len(packet.EncryptedPayload) > MaxPacketSize {
 		t.Fatalf("initial packet size exceeds MTU: got %d, want <= %d", len(packet.EncryptedPayload), MaxPacketSize)
 	}
-	
+
 	// Test first hop
 	nextHop1, payload1, err := nodes[0].Decode(packet)
 	if err != nil {
@@ -132,7 +142,7 @@ func TestEncodeOnion_MultiHopManualDecode(t *testing.T) {
 	if nextHop1 != relays[1].URL {
 		t.Fatalf("hop 0: expected nextHop %q, got %q", relays[1].URL, nextHop1)
 	}
-	
+
 	// Test second hop
 	packet2 := &OnionPacket{
 		Header: OnionHeader{
@@ -148,7 +158,7 @@ func TestEncodeOnion_MultiHopManualDecode(t *testing.T) {
 	if nextHop2 != relays[2].URL {
 		t.Fatalf("hop 1: expected nextHop %q, got %q", relays[2].URL, nextHop2)
 	}
-	
+
 	// Test third hop
 	packet3 := &OnionPacket{
 		Header: OnionHeader{
@@ -164,7 +174,7 @@ func TestEncodeOnion_MultiHopManualDecode(t *testing.T) {
 	if nextHop3 != "" {
 		t.Fatalf("hop 2: expected no nextHop, got %q", nextHop3)
 	}
-	
+
 	// Check final payload
 	if string(payload3) != string(msg) {
 		t.Fatalf("final payload mismatch: got %q, want %q", payload3, msg)
@@ -175,7 +185,7 @@ func TestOnionPrivacyAtEachHop(t *testing.T) {
 	sender, _ := NewSphinx()
 	relays, nodes := makeRelays(t, 3)
 	msg := []byte("privacy test message")
-	pkt, err := sender.Encode(msg, relays)
+	pkt, err := sender.Encode(msg, relays, Proxy, "test")
 	if err != nil {
 		t.Fatalf("Encode failed: %v", err)
 	}
@@ -232,7 +242,7 @@ func TestOnionPrivacyAtEachHop5Relays(t *testing.T) {
 	sender, _ := NewSphinx()
 	relays, nodes := makeRelays(t, 5)
 	msg := []byte("privacy test message 5 relays")
-	pkt, err := sender.Encode(msg, relays)
+	pkt, err := sender.Encode(msg, relays, Proxy, "test")
 	if err != nil {
 		t.Fatalf("Encode failed: %v", err)
 	}
@@ -284,7 +294,7 @@ func TestOnionPrivacyAtEachHop7Relays(t *testing.T) {
 	sender, _ := NewSphinx()
 	relays, nodes := makeRelays(t, 7)
 	msg := []byte("privacy test message 7 relays")
-	pkt, err := sender.Encode(msg, relays)
+	pkt, err := sender.Encode(msg, relays, Proxy, "test")
 	if err != nil {
 		t.Fatalf("Encode failed: %v", err)
 	}
@@ -336,7 +346,7 @@ func TestSenderPubKeyConsistentThroughCircuit(t *testing.T) {
 	sender, _ := NewSphinx()
 	relays, nodes := makeRelays(t, 5)
 	msg := []byte("sender pubkey consistency test")
-	pkt, err := sender.Encode(msg, relays)
+	pkt, err := sender.Encode(msg, relays, Proxy, "test")
 	if err != nil {
 		t.Fatalf("Encode failed: %v", err)
 	}

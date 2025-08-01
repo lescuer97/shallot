@@ -54,7 +54,7 @@ func TestOnionRoutingWithSphinx(t *testing.T) {
 	msg := []byte("Hello, onion routing world!")
 
 	// Encode the message through the circuit
-	packet, err := sender.Encode(msg, []*sphinx.Relay{relay1Info, relay2Info})
+	packet, err := sender.Encode(msg, []*sphinx.Relay{relay1Info, relay2Info}, sphinx.Proxy, "target")
 	if err != nil {
 		t.Fatalf("Failed to encode message: %v", err)
 	}

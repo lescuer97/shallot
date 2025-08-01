@@ -36,7 +36,7 @@ func main() {
 
 	// Initialize the circuit handler
 	circuitHandler := circuit.NewCircuitHandler(sphinxInstance)
-	
+
 	// Ensure we close all connections when the program exits
 	defer circuitHandler.Close()
 
@@ -74,7 +74,7 @@ func main() {
 			// Handle onion routing messages (kind 720)
 			if event.Kind == 720 {
 				log.Printf("Received onion routing message. Processing...")
-				
+
 				// Pass the event to our circuit handler
 				err := circuitHandler.HandleOnionEvent(ctx, event)
 				if err != nil {
@@ -82,12 +82,12 @@ func main() {
 					// We don't return the error here because we still want to acknowledge receipt
 					// but we've logged the error for debugging
 				}
-				
+
 				// For onion routing messages, we don't store them in our local store
 				// They are just forwarded through the circuit
 				return nil
 			}
-			
+
 			// For non-onion events, continue with normal processing
 			return nil
 		},
@@ -100,11 +100,11 @@ func main() {
 	// Start the server
 	address := ":" + *port
 	fmt.Printf("Starting relay '%s' on %s\n", *relayName, address)
-	
+
 	// Create a channel to listen for interrupt signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	
+
 	// Start server in a goroutine
 	go func() {
 		err = http.ListenAndServe(address, relay)
@@ -112,11 +112,11 @@ func main() {
 			log.Panicf("could not listen to server: %v", err)
 		}
 	}()
-	
+
 	// Wait for interrupt signal
 	<-sigChan
 	fmt.Println("\nShutting down relay...")
-	
+
 	// Close the circuit handler connections
 	circuitHandler.Close()
 	fmt.Println("Relay shutdown complete.")
@@ -131,11 +131,11 @@ func publishRelayDiscoveryEvent(sphinxInstance sphinx.Sphinx, relayURL string) {
 		Kind:      30166, // Relay Discovery event
 		Content:   "{}",  // Empty content as per NIP-66 specification
 		Tags: nostr.Tags{
-			[]string{"d", relayURL},                // Relay URL
-			[]string{"N", "66"},                    // Supports NIP-66
-			[]string{"k", "720"},                   // Supports onion routing events
-			[]string{"R", "!payment"},              // No payment required
-			[]string{"R", "!auth"},                 // No authentication required
+			[]string{"d", relayURL},   // Relay URL
+			[]string{"N", "66"},       // Supports NIP-66
+			[]string{"k", "720"},      // Supports onion routing events
+			[]string{"R", "!payment"}, // No payment required
+			[]string{"R", "!auth"},    // No authentication required
 		},
 	}
 
@@ -145,12 +145,12 @@ func publishRelayDiscoveryEvent(sphinxInstance sphinx.Sphinx, relayURL string) {
 		log.Printf("Error signing relay discovery event: %v", err)
 		return
 	}
-	
+
 	fmt.Printf("\n=== NIP-66 Relay Discovery Event ===\n")
 	fmt.Printf("Relay URL: %s\n", relayURL)
 	fmt.Printf("Event JSON: %+v\n", event)
 	fmt.Printf("=====================================\n\n")
-	
+
 	// Publish to local relay
 	publishToLocalRelay(event)
 }
@@ -158,12 +158,12 @@ func publishRelayDiscoveryEvent(sphinxInstance sphinx.Sphinx, relayURL string) {
 // publishToLocalRelay sends the discovery event to the local relay
 func publishToLocalRelay(event nostr.Event) {
 	localRelayURL := "ws://localhost:4869"
-	
+
 	fmt.Printf("Publishing NIP-66 event to local relay: %s\n", localRelayURL)
-	
+
 	// Create context with timeout
 	ctx := context.Background()
-	
+
 	// Connect to local relay
 	localRelay, err := nostr.RelayConnect(ctx, localRelayURL)
 	if err != nil {
@@ -171,13 +171,13 @@ func publishToLocalRelay(event nostr.Event) {
 		return
 	}
 	defer localRelay.Close()
-	
+
 	// Publish the event
 	err = localRelay.Publish(ctx, event)
 	if err != nil {
 		fmt.Printf("Warning: Failed to publish to local relay: %v\n", err)
 		return
 	}
-	
+
 	fmt.Printf("✅ Successfully published NIP-66 event to local relay\n")
 }

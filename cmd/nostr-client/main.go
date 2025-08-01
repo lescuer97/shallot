@@ -18,6 +18,7 @@ import (
 )
 
 // Session represents a single onion routing session
+// [cbor]
 type Session struct {
 	ID                   string              // Unique session identifier
 	OriginalSenderPubKey []byte              // Original sender's public key
@@ -27,12 +28,14 @@ type Session struct {
 }
 
 // SessionRelay holds information about a relay used in a session
+// [cbor]
 type SessionRelay struct {
-	URL      string // Relay URL
+	URL       string // Relay URL
 	PublicKey []byte // Relay's public key
 }
 
 // SessionManager manages onion routing sessions
+// [cbor]
 type SessionManager struct {
 	sessions map[string]*Session
 	mu       sync.RWMutex
@@ -104,58 +107,58 @@ func main() {
 		if err != nil {
 			log.Fatal("Failed to query NIP-66 relays:", err)
 		}
-		
+
 		// Check if there are any relays available
 		if len(relays) == 0 {
 			log.Panic("No relays found via NIP-66 discovery")
 		}
-		
+
 		// Filter for onion-capable relays
 		onionRelays := utils.GetOnionCapableRelays(relays)
-		
+
 		// Check if there are any onion-capable relays
 		if len(onionRelays) == 0 {
 			log.Panic("No onion-capable relays found via NIP-66 discovery")
 		}
-		
+
 		// Pick the first two relays (or just one if only one is available)
 		var relaysList []struct {
 			URL  string
 			Info utils.RelayInfo
 		}
 		relayCount := 0
-		
+
 		for url, relayInfo := range onionRelays {
 			relaysList = append(relaysList, struct {
 				URL  string
 				Info utils.RelayInfo
 			}{URL: url, Info: relayInfo})
-			
+
 			relayCount++
 			if relayCount >= 2 {
 				break
 			}
 		}
-		
+
 		// Create relay info for each hop in the circuit
 		var sphinxRelays []*sphinx.Relay
 		var relayURLs []string
-		
+
 		for i, relayData := range relaysList {
 			// Convert the 32-byte X-only public key to a full secp256k1 public key
 			fullPubKey, err := secp256k1.ParsePubKey(append([]byte{0x02}, relayData.Info.PublicKey...))
 			if err != nil {
 				log.Fatal("Failed to parse relay public key:", err)
 			}
-			
+
 			relayInfo, err := sphinx.NewRelay(fullPubKey, relayData.URL)
 			if err != nil {
 				log.Fatal("Failed to create relay info:", err)
 			}
-			
+
 			sphinxRelays = append(sphinxRelays, relayInfo)
 			relayURLs = append(relayURLs, relayData.URL)
-			
+
 			// Print circuit information
 			hopName := fmt.Sprintf("Hop %d", i+1)
 			if i == len(relaysList)-1 {
@@ -163,15 +166,14 @@ func main() {
 			}
 			fmt.Printf("%s: %s\n", hopName, relayData.URL)
 		}
-		
-		
+
 		// Connect to the first relay for sending the onion message
 		firstHopRelay, err := nostr.RelayConnect(ctx, relayURLs[0])
 		if err != nil {
 			log.Fatal("Failed to connect to first relay:", err)
 		}
 		defer firstHopRelay.Close()
-		
+
 		// Convert the message to bytes
 		messageBytes := []byte(*message)
 
@@ -182,7 +184,7 @@ func main() {
 		}
 
 		// Use the Sphinx module to encode the message through the circuit
-		onionPacket, err := sphinxInstance.Encode(messageBytes, sphinxRelays)
+		onionPacket, err := sphinxInstance.Encode(messageBytes, sphinxRelays, sphinx.Proxy, "https://localhost:3821")
 		if err != nil {
 			log.Fatal("Failed to encode message through onion circuit:", err)
 		}
@@ -191,11 +193,11 @@ func main() {
 		var sessionRelays []SessionRelay
 		for i, relayData := range relaysList {
 			sessionRelays = append(sessionRelays, SessionRelay{
-				URL:      relayData.URL,
+				URL:       relayData.URL,
 				PublicKey: sphinxRelays[i].PublicKey.SerializeCompressed(),
 			})
 		}
-		
+
 		session := &Session{
 			ID:                   hex.EncodeToString(sphinxInstance.GetPublicKey().SerializeCompressed()),
 			OriginalSenderPubKey: sphinxInstance.GetPublicKey().SerializeCompressed(),
@@ -203,7 +205,7 @@ func main() {
 			CreatedAt:            time.Now(),
 			OnionPacket:          onionPacket,
 		}
-		
+
 		// Add the session to the session manager
 		sessionManager.AddSession(session)
 
@@ -239,11 +241,11 @@ func main() {
 		}
 
 		fmt.Printf("✅ Onion event published successfully!\n")
-		
+
 		// Set up subscription to listen for responses
 		sub, err := firstHopRelay.Subscribe(ctx, []nostr.Filter{
 			{
-				Kinds:   []int{720}, // Listen for onion routing messages
+				Kinds:   []int{720},             // Listen for onion routing messages
 				Authors: []string{relayURLs[0]}, // From the relay we sent to
 			},
 		})
@@ -260,22 +262,22 @@ func main() {
 		if err != nil {
 			log.Fatal("Failed to query relays:", err)
 		}
-		
+
 		// Filter for any relay (not just onion-capable for regular messages)
 		if len(relays) == 0 {
 			log.Panic("No relays found via NIP-66 discovery")
 		}
-		
+
 		// Use the first relay in the list
 		var firstRelayURL string
-		
+
 		for url := range relays {
 			firstRelayURL = url
 			break
 		}
-		
+
 		fmt.Printf("Using first discovered relay: %s\n", firstRelayURL)
-		
+
 		// Connect to the first relay
 		ctx := context.Background()
 		firstRelay, err := nostr.RelayConnect(ctx, firstRelayURL)
@@ -283,7 +285,7 @@ func main() {
 			log.Fatal("Failed to connect to first relay:", err)
 		}
 		defer firstRelay.Close()
-		
+
 		err = sendRegularMessage(ctx, firstRelay, sk, pub, *message)
 		if err != nil {
 			log.Fatal("Failed to send regular message:", err)
@@ -291,7 +293,7 @@ func main() {
 	}
 
 	fmt.Printf("\nClient test completed!\n")
-	
+
 	// Keep the client running to receive responses
 	select {}
 }

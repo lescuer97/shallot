@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/lescuer97/shallot/sphinx"
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -80,9 +81,9 @@ func (ch *CircuitHandler) HandleOnionEvent(ctx context.Context, event *nostr.Eve
 		session = &Session{
 			ID:                   sessionID,
 			OriginalSenderPubKey: packet.Header.SenderPubKey,
-			PreviousRelayURL:     "", // Will be populated by previous relay
+			PreviousRelayURL:     "",  // Will be populated by previous relay
 			PreviousRelayPubKey:  nil, // Will be populated by previous relay
-			NextRelayURL:         "", // Will be populated after decryption
+			NextRelayURL:         "",  // Will be populated after decryption
 			CreatedAt:            time.Now(),
 		}
 		ch.sessions[sessionID] = session
@@ -187,8 +188,14 @@ func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL strin
 
 // processFinalPayload handles the final payload when this relay is the destination
 func (ch *CircuitHandler) processFinalPayload(ctx context.Context, payload []byte) error {
+	var finalPayload sphinx.LastHopPayload
+	log.Printf("Pre cbor processing: %+v", payload)
+	err := cbor.Unmarshal(payload, &finalPayload)
+	if err != nil {
+		return err
+	}
 	// Print the final payload/event as requested
-	log.Printf("Reached final destination. Decrypted payload: %s", string(payload))
+	log.Printf("Reached final destination. Decrypted payload: %+v", finalPayload)
 
 	// In a real implementation, this might involve:
 	// 1. Parsing the payload as a Nostr event
