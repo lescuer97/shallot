@@ -13,7 +13,7 @@ func TestProcessNIP66EventRealNostrKey(t *testing.T) {
 	// Test with a real Nostr public key (32-byte X-only)
 	// This is a valid Nostr public key from actual Nostr usage
 	realNostrPubKey := "5a462d7447302581353731326d42794f53506c4546746d5445644c4d63784c4a"
-	
+
 	event := &nostr.Event{
 		PubKey:    realNostrPubKey,
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
@@ -36,7 +36,7 @@ func TestProcessNIP66EventRealNostrKey(t *testing.T) {
 	if relayInfo.PublicKey == nil {
 		t.Error("Expected public key to not be nil")
 	}
-	
+
 	// Check that it's 32 bytes
 	if len(relayInfo.PublicKey) != 32 {
 		t.Errorf("Expected public key to be 32 bytes, got %d", len(relayInfo.PublicKey))
@@ -62,7 +62,7 @@ func TestProcessNIP66EventRealNostrKey(t *testing.T) {
 func TestProcessNIP66Event(t *testing.T) {
 	// Create a mock NIP-66 event with a valid 32-byte X-only public key
 	validXOnlyPubKey := "5a462d7447302581353731326d42794f53506c4546746d5445644c4d63784c4a"
-	
+
 	event := &nostr.Event{
 		PubKey:    validXOnlyPubKey,
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
@@ -85,7 +85,7 @@ func TestProcessNIP66Event(t *testing.T) {
 	if relayInfo.PublicKey == nil {
 		t.Error("Expected public key to not be nil")
 	}
-	
+
 	// Check that it's 32 bytes
 	if len(relayInfo.PublicKey) != 32 {
 		t.Errorf("Expected public key to be 32 bytes, got %d", len(relayInfo.PublicKey))
@@ -111,7 +111,7 @@ func TestProcessNIP66Event(t *testing.T) {
 func TestProcessNIP66EventWithoutOnionSupport(t *testing.T) {
 	// Create a mock NIP-66 event without onion support
 	validXOnlyPubKey := "5a462d7447302581353731326d42794f53506c4546746d5445644c4d63784c4a"
-	
+
 	event := &nostr.Event{
 		PubKey:    validXOnlyPubKey,
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
@@ -164,7 +164,7 @@ func TestProcessNIP66EventInvalidCurvePoint(t *testing.T) {
 	// Test with 32 bytes that don't represent a valid curve point
 	// This is 32 bytes of 0xFF which is not a valid X coordinate
 	invalidPubKey := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-	
+
 	event := &nostr.Event{
 		PubKey:    invalidPubKey,
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),

@@ -195,7 +195,7 @@ func (ch *CircuitHandler) processFinalPayload(ctx context.Context, payload []byt
 		return err
 	}
 	// Print the final payload/event as requested
-	log.Printf("Reached final destination. Decrypted payload: %+v", finalPayload)
+	log.Printf("Reached final destination. Decrypted payload: %+v", string(finalPayload.Payload))
 
 	// In a real implementation, this might involve:
 	// 1. Parsing the payload as a Nostr event

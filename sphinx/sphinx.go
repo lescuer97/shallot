@@ -53,22 +53,22 @@ type Sphinx struct {
 // [cbor]
 type Relay struct {
 	PublicKey *secp256k1.PublicKey `cbor:"pubkey"`
-	URL       string`cbor:"url"`
+	URL       string               `cbor:"url"`
 }
 
 // OnionHeader is always present and is used for routing and cryptography.
 // [cbor]
 type OnionHeader struct {
-	SenderPubKey    []byte `cbor:"sPubkey"`// 33 bytes, secp256k1 compressed
-	NextRelayURL    Relay `cbor:"nextRelay"`
-	EncryptedLength int `cbor:"encryptedLength"`// Length of the actual encrypted content (excluding padding)
+	SenderPubKey    []byte `cbor:"sPubkey"` // 33 bytes, secp256k1 compressed
+	NextRelayURL    Relay  `cbor:"nextRelay"`
+	EncryptedLength int    `cbor:"encryptedLength"` // Length of the actual encrypted content (excluding padding)
 }
 
 // OnionPacket is the wire format for all packets.
 // [cbor]
 type OnionPacket struct {
-	Header           OnionHeader`cbor:"header"`
-	EncryptedPayload []byte `cbor:"encryptedPayload"` // This contains a new OnionPacket. Last hop contiains the OnionHeader and EncryptedPayload is the Payload
+	Header           OnionHeader `cbor:"header"`
+	EncryptedPayload []byte      `cbor:"encryptedPayload"` // This contains a new OnionPacket. Last hop contiains the OnionHeader and EncryptedPayload is the Payload
 }
 
 // FragmentationHeader is always present at the start of the cleartext payload.
@@ -89,9 +89,9 @@ const (
 
 type LastHopPayload struct {
 	FragmentationHeader *FragmentationHeader
-	MessageType         MessageType`cbor:"MessageType"`
-	TargetUrl           string`cbor:"targetUrl"`
-	Payload             []byte`cbor:"payload"`
+	MessageType         MessageType `cbor:"MessageType"`
+	TargetUrl           string      `cbor:"targetUrl"`
+	Payload             []byte      `cbor:"payload"`
 }
 
 func NewSphinx() (Sphinx, error) {
@@ -246,15 +246,15 @@ func (s *Sphinx) Decode(packet *OnionPacket) (nextHopURL string, payload []byte,
 		return "", nil, fmt.Errorf("failed to decrypt layer: %w", err)
 	}
 
-	// Try to decode as an OnionPacket (CBOR)
-    strictDecOptions := cbor.DecOptions{
-        ExtraReturnErrors: cbor.ExtraDecErrorUnknownField,
-    }
+	strictDecOptions := cbor.DecOptions{
+		ExtraReturnErrors: cbor.ExtraDecErrorUnknownField,
+	}
 
 	strictDecMode, err := strictDecOptions.DecMode()
-    if err != nil {
-        log.Fatal(err)
-    }
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	var inner OnionPacket
 	err = strictDecMode.Unmarshal(decrypted, &inner)
 	if err == nil {

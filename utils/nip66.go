@@ -13,43 +13,43 @@ import (
 
 // RelayInfo stores information about a relay discovered via NIP-66
 type RelayInfo struct {
-	PublicKey          []byte // 32-byte X-only public key as used in Bitcoin Taproot
-	RelayURL           string
-	SupportsOnionKind  bool
-	LastAnnounced      time.Time
+	PublicKey         []byte // 32-byte X-only public key as used in Bitcoin Taproot
+	RelayURL          string
+	SupportsOnionKind bool
+	LastAnnounced     time.Time
 }
 
 // QueryNIP66Relays queries a relay for NIP-66 relay announcements
 // Returns a map of relay URL to RelayInfo, keeping only the most recent event for each relay
 func QueryNIP66Relays(relayURL string) (map[string]RelayInfo, error) {
 	fmt.Printf("Querying relay %s for NIP-66 relay announcements...\n", relayURL)
-	
+
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	// Connect to relay
 	relay, err := nostr.RelayConnect(ctx, relayURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to relay: %w", err)
 	}
 	defer relay.Close()
-	
+
 	// Create filter for NIP-66 relay discovery events (kind 30166)
 	filter := nostr.Filter{
 		Kinds: []int{30166},
 	}
-	
+
 	// Subscribe to events
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
 	if err != nil {
 		return nil, fmt.Errorf("failed to subscribe to NIP-66 events: %w", err)
 	}
 	defer sub.Unsub()
-	
+
 	// Map to store relay information (keyed by relay URL)
 	relays := make(map[string]RelayInfo)
-	
+
 	// Collect events with timeout
 	timeout := time.After(5 * time.Second)
 eventLoop:
@@ -59,33 +59,33 @@ eventLoop:
 			if event == nil {
 				continue
 			}
-			
+
 			// Process the NIP-66 event
 			relayInfo, err := processNIP66Event(event)
 			if err != nil {
 				continue
 			}
-			
+
 			// Update or add relay info (only keep the most recent event for each relay)
 			if existing, exists := relays[relayInfo.RelayURL]; !exists || event.CreatedAt.Time().After(existing.LastAnnounced) {
 				relays[relayInfo.RelayURL] = relayInfo
 			}
-			
+
 		case <-sub.EndOfStoredEvents:
 			// Break the loop when we receive EOSE (End of Stored Events)
 			fmt.Println("Received EOSE, finishing query early")
 			break eventLoop
-			
+
 		case <-timeout:
 			fmt.Println("Timeout reached, finishing query")
 			break eventLoop
-			
+
 		case <-ctx.Done():
 			fmt.Println("Context cancelled, finishing query")
 			break eventLoop
 		}
 	}
-	
+
 	return relays, nil
 }
 
@@ -96,23 +96,23 @@ func processNIP66Event(event *nostr.Event) (RelayInfo, error) {
 	if err != nil {
 		return RelayInfo{}, fmt.Errorf("failed to decode public key: %w", err)
 	}
-	
+
 	// Validate that it's a 32-byte X-only public key
 	if len(pubKeyBytes) != 32 {
 		return RelayInfo{}, fmt.Errorf("invalid public key length: expected 32 bytes, got %d", len(pubKeyBytes))
 	}
-	
+
 	// Validate that it's a valid X coordinate on the secp256k1 curve
 	_, err = secp256k1.ParsePubKey(append([]byte{0x02}, pubKeyBytes...))
 	if err != nil {
 		return RelayInfo{}, fmt.Errorf("invalid public key: not a valid point on secp256k1 curve")
 	}
-	
+
 	relayInfo := RelayInfo{
 		PublicKey:     pubKeyBytes, // Store the 32-byte X-only public key
 		LastAnnounced: event.CreatedAt.Time(),
 	}
-	
+
 	// Extract relay URL from "d" tag
 	relayURL := ""
 	for _, tag := range event.Tags {
@@ -121,13 +121,13 @@ func processNIP66Event(event *nostr.Event) (RelayInfo, error) {
 			break
 		}
 	}
-	
+
 	if relayURL == "" {
 		return relayInfo, fmt.Errorf("no relay URL found in d tag")
 	}
-	
+
 	relayInfo.RelayURL = relayURL
-	
+
 	// Check if relay supports onion message kind (720)
 	for _, tag := range event.Tags {
 		if len(tag) >= 2 && tag[0] == "k" && tag[1] == "720" {
@@ -135,7 +135,7 @@ func processNIP66Event(event *nostr.Event) (RelayInfo, error) {
 			break
 		}
 	}
-	
+
 	return relayInfo, nil
 }
 

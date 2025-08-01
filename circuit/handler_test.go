@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/lescuer97/shallot/sphinx"
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -119,9 +120,21 @@ func TestProcessFinalPayload(t *testing.T) {
 
 	handler := NewCircuitHandler(s)
 
+	// Create a proper LastHopPayload for testing
+	lastHopPayload := sphinx.LastHopPayload{
+		MessageType: sphinx.Proxy,
+		TargetUrl:   "test_destination",
+		Payload:     []byte("test final payload"),
+	}
+
+	// Marshal the LastHopPayload as CBOR (as it would be in the actual implementation)
+	payload, err := cbor.Marshal(lastHopPayload)
+	if err != nil {
+		t.Fatalf("Failed to marshal LastHopPayload: %v", err)
+	}
+
 	// This test mainly ensures the function doesn't panic
 	// The actual printing is a side effect we can't easily test
-	payload := []byte("test final payload")
 	err = handler.processFinalPayload(context.Background(), payload)
 	if err != nil {
 		t.Errorf("Unexpected error in processFinalPayload: %v", err)
@@ -155,5 +168,51 @@ func TestEncodeDecodeOnionPacket(t *testing.T) {
 		t.Errorf("Payloads don't match. Expected: %s, Got: %s",
 			string(packet.EncryptedPayload),
 			string(decodedPacket.EncryptedPayload))
+	}
+}
+
+// TestSphinxEncodeFunction tests the new 4-argument Encode function
+func TestSphinxEncodeFunction(t *testing.T) {
+	s, err := sphinx.NewSphinx()
+	if err != nil {
+		t.Fatalf("Failed to create sphinx: %v", err)
+	}
+
+	// Create test relays
+	relay1, err := sphinx.NewSphinx()
+	if err != nil {
+		t.Fatalf("Failed to create relay1: %v", err)
+	}
+	relay1Info, err := sphinx.NewRelay(relay1.GetPublicKey(), "wss://relay1.example.com")
+	if err != nil {
+		t.Fatalf("Failed to create relay1 info: %v", err)
+	}
+
+	relay2, err := sphinx.NewSphinx()
+	if err != nil {
+		t.Fatalf("Failed to create relay2: %v", err)
+	}
+	relay2Info, err := sphinx.NewRelay(relay2.GetPublicKey(), "wss://relay2.example.com")
+	if err != nil {
+		t.Fatalf("Failed to create relay2 info: %v", err)
+	}
+
+	relays := []*sphinx.Relay{relay1Info, relay2Info}
+	message := []byte("Hello, onion routing world!")
+
+	// Test the new 4-argument Encode function
+	packet, err := s.Encode(message, relays, sphinx.Proxy, "test_destination")
+	if err != nil {
+		t.Fatalf("Failed to encode message: %v", err)
+	}
+
+	if packet == nil {
+		t.Fatal("Encoded packet is nil")
+	}
+
+	// Check that the packet has the correct size
+	if len(packet.EncryptedPayload) != sphinx.MaxPacketSize {
+		t.Errorf("Packet size is incorrect. Expected: %d, Got: %d",
+			sphinx.MaxPacketSize, len(packet.EncryptedPayload))
 	}
 }

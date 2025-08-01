@@ -68,29 +68,36 @@ func TestSphinxEncryptDecryptLayer_Success(t *testing.T) {
 	sender, _ := NewSphinx()
 	receiver, _ := NewSphinx()
 	payload := []byte("test onion layer payload")
-	encrypted, err := sender.encryptLayer(payload, receiver.GetPublicKey())
+
+	// Create a mock relay for the single hop test
+	relay, err := NewRelay(receiver.GetPublicKey(), "wss://test.example.com")
 	if err != nil {
-		t.Fatalf("encryptLayer failed: %v", err)
+		t.Fatalf("failed to create relay: %v", err)
 	}
 
-	// Create a mock OnionPacket with header containing sender's public key
-	mockPacket := &OnionPacket{
-		Header: OnionHeader{
-			SenderPubKey: sender.GetPublicKey().SerializeCompressed(),
-		},
-		EncryptedPayload: encrypted,
+	// Use the new 4-argument Encode function
+	relays := []*Relay{relay}
+	packet, err := sender.Encode(payload, relays, Proxy, "test")
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
 	}
 
-	nextHop, decrypted, err := receiver.Decode(mockPacket)
+	nextHop, decrypted, err := receiver.Decode(packet)
 	if err != nil {
 		t.Fatalf("Decode failed: %v", err)
 	}
 
-	if string(decrypted) != string(payload) {
-		t.Fatalf("decrypted payload mismatch: got %q, want %q", decrypted, payload)
+	var lastHop LastHopPayload
+	err = cbor.Unmarshal(decrypted, &lastHop)
+	if err != nil {
+		t.Fatalf("could not unmarshal the encrypted payload %+v", err)
 	}
 
-	// nextHop should be empty since this isn't a full onion packet with inner structure
+	if string(lastHop.Payload) != string(payload) {
+		t.Fatalf("decrypted payload mismatch: got %q, want %q", lastHop.Payload, payload)
+	}
+
+	// nextHop should be empty since this is the final hop
 	if nextHop != "" {
 		t.Fatalf("expected empty nextHop, got %q", nextHop)
 	}
@@ -101,22 +108,23 @@ func TestSphinxDecryptLayer_FailsWithWrongKey(t *testing.T) {
 	receiver, _ := NewSphinx()
 	wrongReceiver, _ := NewSphinx()
 	payload := []byte("test onion layer payload")
-	encrypted, err := sender.encryptLayer(payload, receiver.GetPublicKey())
+
+	// Create a mock relay for the test
+	relay, err := NewRelay(receiver.GetPublicKey(), "wss://test.example.com")
 	if err != nil {
-		t.Fatalf("encryptLayer failed: %v", err)
+		t.Fatalf("failed to create relay: %v", err)
 	}
 
-	// Create a mock OnionPacket with header containing sender's public key
-	mockPacket := &OnionPacket{
-		Header: OnionHeader{
-			SenderPubKey: sender.GetPublicKey().SerializeCompressed(),
-		},
-		EncryptedPayload: encrypted,
+	// Use the new 4-argument Encode function
+	relays := []*Relay{relay}
+	packet, err := sender.Encode(payload, relays, Proxy, "test")
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
 	}
 
 	// Try to decode with wrong receiver - this should fail because the header
 	// and the encryption are tied to the specific sender
-	_, _, err = wrongReceiver.Decode(mockPacket)
+	_, _, err = wrongReceiver.Decode(packet)
 	if err == nil {
 		t.Fatalf("expected error when decoding with wrong receiver, got nil")
 	}
@@ -147,6 +155,7 @@ func TestEncodeOnion_MultiHopManualDecode(t *testing.T) {
 	packet2 := &OnionPacket{
 		Header: OnionHeader{
 			SenderPubKey:    sender.GetPublicKey().SerializeCompressed(),
+			NextRelayURL:    *relays[1],
 			EncryptedLength: len(payload1),
 		},
 		EncryptedPayload: payload1,
@@ -163,6 +172,7 @@ func TestEncodeOnion_MultiHopManualDecode(t *testing.T) {
 	packet3 := &OnionPacket{
 		Header: OnionHeader{
 			SenderPubKey:    sender.GetPublicKey().SerializeCompressed(),
+			NextRelayURL:    *relays[2],
 			EncryptedLength: len(payload2),
 		},
 		EncryptedPayload: payload2,
@@ -176,8 +186,14 @@ func TestEncodeOnion_MultiHopManualDecode(t *testing.T) {
 	}
 
 	// Check final payload
-	if string(payload3) != string(msg) {
-		t.Fatalf("final payload mismatch: got %q, want %q", payload3, msg)
+	var lastHop LastHopPayload
+	err = cbor.Unmarshal(payload3, &lastHop)
+	if err != nil {
+		t.Fatalf("could not unmarshal the encrypted payload %+v", err)
+	}
+
+	if string(lastHop.Payload) != string(msg) {
+		t.Fatalf("final payload mismatch: got %q, want %q", lastHop.Payload, msg)
 	}
 }
 
@@ -208,33 +224,33 @@ func TestOnionPrivacyAtEachHop(t *testing.T) {
 			}
 		}
 
-		// The payload at this hop should not be readable as the original message or as an OnionPacket (except at the last hop)
+		// The payload at this hop should not be readable as the original message
 		if i < len(nodes)-1 {
 			var tryMsg string
 			if err := cbor.Unmarshal(payload, &tryMsg); err == nil && tryMsg == string(msg) {
 				t.Fatalf("hop %d: payload should not be readable as message", i)
 			}
-			var tryPkt OnionPacket
-			if err := cbor.Unmarshal(payload, &tryPkt); err == nil {
-				// It should not be readable as a valid OnionPacket at this hop
-				if tryPkt.Header.NextRelayURL.URL == relays[i+2%len(relays)].URL {
-					t.Fatalf("hop %d: payload should not be readable as next OnionPacket", i)
-				}
+		} else {
+			// At the final hop, we should be able to unmarshal as LastHopPayload
+			var lastHop LastHopPayload
+			if err := cbor.Unmarshal(payload, &lastHop); err != nil {
+				t.Fatalf("hop %d: could not unmarshal as LastHopPayload: %v", i, err)
+			}
+			if string(lastHop.Payload) != string(msg) {
+				t.Fatalf("hop %d: final payload mismatch: got %q, want %q", i, lastHop.Payload, msg)
 			}
 		}
 
 		// Prepare for next hop
-		currentPacket = &OnionPacket{
-			Header: OnionHeader{
-				SenderPubKey: sender.GetPublicKey().SerializeCompressed(),
-			},
-			EncryptedPayload: payload,
+		if i < len(nodes)-1 {
+			currentPacket = &OnionPacket{
+				Header: OnionHeader{
+					SenderPubKey: sender.GetPublicKey().SerializeCompressed(),
+					NextRelayURL: *relays[i+1],
+				},
+				EncryptedPayload: payload,
+			}
 		}
-	}
-
-	// At the last hop, the payload should be the original message
-	if string(currentPacket.EncryptedPayload) != string(msg) {
-		t.Fatalf("final payload mismatch: got %q, want %q", currentPacket.EncryptedPayload, msg)
 	}
 }
 
@@ -264,29 +280,33 @@ func TestOnionPrivacyAtEachHop5Relays(t *testing.T) {
 			}
 		}
 
+		// The payload at this hop should not be readable as the original message
 		if i < len(nodes)-1 {
 			var tryMsg string
 			if err := cbor.Unmarshal(payload, &tryMsg); err == nil && tryMsg == string(msg) {
 				t.Fatalf("hop %d: payload should not be readable as message", i)
 			}
-			var tryPkt OnionPacket
-			if err := cbor.Unmarshal(payload, &tryPkt); err == nil {
-				if tryPkt.Header.NextRelayURL.URL == relays[(i+2)%len(relays)].URL {
-					t.Fatalf("hop %d: payload should not be readable as next OnionPacket", i)
-				}
+		} else {
+			// At the final hop, we should be able to unmarshal as LastHopPayload
+			var lastHop LastHopPayload
+			if err := cbor.Unmarshal(payload, &lastHop); err != nil {
+				t.Fatalf("hop %d: could not unmarshal as LastHopPayload: %v", i, err)
+			}
+			if string(lastHop.Payload) != string(msg) {
+				t.Fatalf("hop %d: final payload mismatch: got %q, want %q", i, lastHop.Payload, msg)
 			}
 		}
 
-		currentPacket = &OnionPacket{
-			Header: OnionHeader{
-				SenderPubKey: sender.GetPublicKey().SerializeCompressed(),
-			},
-			EncryptedPayload: payload,
+		// Prepare for next hop
+		if i < len(nodes)-1 {
+			currentPacket = &OnionPacket{
+				Header: OnionHeader{
+					SenderPubKey: sender.GetPublicKey().SerializeCompressed(),
+					NextRelayURL: *relays[i+1],
+				},
+				EncryptedPayload: payload,
+			}
 		}
-	}
-
-	if string(currentPacket.EncryptedPayload) != string(msg) {
-		t.Fatalf("final payload mismatch: got %q, want %q", currentPacket.EncryptedPayload, msg)
 	}
 }
 
@@ -316,29 +336,33 @@ func TestOnionPrivacyAtEachHop7Relays(t *testing.T) {
 			}
 		}
 
+		// The payload at this hop should not be readable as the original message
 		if i < len(nodes)-1 {
 			var tryMsg string
 			if err := cbor.Unmarshal(payload, &tryMsg); err == nil && tryMsg == string(msg) {
 				t.Fatalf("hop %d: payload should not be readable as message", i)
 			}
-			var tryPkt OnionPacket
-			if err := cbor.Unmarshal(payload, &tryPkt); err == nil {
-				if tryPkt.Header.NextRelayURL.URL == relays[(i+2)%len(relays)].URL {
-					t.Fatalf("hop %d: payload should not be readable as next OnionPacket", i)
-				}
+		} else {
+			// At the final hop, we should be able to unmarshal as LastHopPayload
+			var lastHop LastHopPayload
+			if err := cbor.Unmarshal(payload, &lastHop); err != nil {
+				t.Fatalf("hop %d: could not unmarshal as LastHopPayload: %v", i, err)
+			}
+			if string(lastHop.Payload) != string(msg) {
+				t.Fatalf("hop %d: final payload mismatch: got %q, want %q", i, lastHop.Payload, msg)
 			}
 		}
 
-		currentPacket = &OnionPacket{
-			Header: OnionHeader{
-				SenderPubKey: sender.GetPublicKey().SerializeCompressed(),
-			},
-			EncryptedPayload: payload,
+		// Prepare for next hop
+		if i < len(nodes)-1 {
+			currentPacket = &OnionPacket{
+				Header: OnionHeader{
+					SenderPubKey: sender.GetPublicKey().SerializeCompressed(),
+					NextRelayURL: *relays[i+1],
+				},
+				EncryptedPayload: payload,
+			}
 		}
-	}
-
-	if string(currentPacket.EncryptedPayload) != string(msg) {
-		t.Fatalf("final payload mismatch: got %q, want %q", currentPacket.EncryptedPayload, msg)
 	}
 }
 
@@ -366,17 +390,16 @@ func TestSenderPubKeyConsistentThroughCircuit(t *testing.T) {
 			// Last hop, payload is not an OnionPacket
 			break
 		}
-		var inner OnionPacket
-		if err := cbor.Unmarshal(payload, &inner); err == nil {
+
+		// Prepare for next hop
+		if i < len(nodes)-1 {
 			currentPacket = &OnionPacket{
 				Header: OnionHeader{
 					SenderPubKey: sender.GetPublicKey().SerializeCompressed(),
+					NextRelayURL: *relays[i+1],
 				},
-				EncryptedPayload: inner.EncryptedPayload,
+				EncryptedPayload: payload,
 			}
-		} else {
-			// Last hop, payload is not an OnionPacket
-			break
 		}
 	}
 }
