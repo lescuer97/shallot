@@ -258,12 +258,10 @@ func (s *Sphinx) Decode(packet *OnionPacket) (nextHopURL string, payload []byte,
 	var inner OnionPacket
 	err = strictDecMode.Unmarshal(decrypted, &inner)
 	if err == nil {
-		log.Printf("\n inside decrypted: %+v", inner)
 		// Successfully decoded as an OnionPacket, so this is not the last hop
 		return inner.Header.NextRelayURL.URL, inner.EncryptedPayload, nil
 	}
 
-	log.Printf("\n finalhop: %+v", decrypted)
 	// If not CBOR, treat as the final payload (last hop)
 	return "", decrypted, nil
 }

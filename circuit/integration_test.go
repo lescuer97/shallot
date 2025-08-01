@@ -43,12 +43,12 @@ func TestOnionRoutingWithSphinx(t *testing.T) {
 	}
 
 	// Create circuit handler for relay1
-	handler1 := NewCircuitHandler(relay1)
-	defer handler1.Close()
+	_ = NewCircuitHandler(relay1)
+	// Note: No Close method anymore since we removed the global connections
 
 	// Create circuit handler for relay2
-	handler2 := NewCircuitHandler(relay2)
-	defer handler2.Close()
+	_ = NewCircuitHandler(relay2)
+	// Note: No Close method anymore since we removed the global connections
 
 	// Test message
 	msg := []byte("Hello, onion routing world!")

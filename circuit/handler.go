@@ -9,39 +9,41 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fxamacker/cbor/v2"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lescuer97/shallot/sphinx"
 	"github.com/nbd-wtf/go-nostr"
 )
 
+// SessionRelay holds information about a relay used in a session
+type SessionRelay struct {
+	URL       string // Relay URL
+	PublicKey []byte // Relay's public key
+}
+
 // Session represents a single onion routing session
 type Session struct {
-	ID                   string // Unique session identifier
-	OriginalSenderPubKey []byte // Original sender's public key
-	PreviousRelayURL     string // URL of the previous relay in the circuit
-	PreviousRelayPubKey  []byte // Public key of the previous relay
-	NextRelayURL         string // URL of the next relay (can be empty for final destination)
+	ID                   string           // Unique session identifier
+	OriginalSenderPubKey *btcec.PublicKey // Original sender's public key
+	PreviousRelayPubKey  *btcec.PublicKey // Public key of the previous relay
+	NextRelayURL         string           // URL of the next relay (can be empty for final destination)
+	PreviousRelay        *nostr.Relay     // Connection to the previous relay
+	NextRelay            *nostr.Relay     // Connection to the next relay
 	CreatedAt            time.Time
 }
 
 // CircuitHandler manages onion routing circuits for Nostr events
 type CircuitHandler struct {
-	sphinx      sphinx.Sphinx
-	connections map[string]*nostr.Relay
-	sessions    map[string]*Session // Map of session ID to Session
-	mu          sync.RWMutex
+	sphinx   sphinx.Sphinx
+	sessions map[string]*Session // Map of session ID to Session
+	mu       sync.RWMutex
 }
 
 // NewCircuitHandler creates a new circuit handler
 func NewCircuitHandler(s sphinx.Sphinx) *CircuitHandler {
 	handler := &CircuitHandler{
-		sphinx:      s,
-		connections: make(map[string]*nostr.Relay),
-		sessions:    make(map[string]*Session),
+		sphinx:   s,
+		sessions: make(map[string]*Session),
 	}
-
-	// Start a background goroutine to clean up stale connections
-	go handler.cleanupStaleConnections()
 
 	return handler
 }
@@ -77,13 +79,26 @@ func (ch *CircuitHandler) HandleOnionEvent(ctx context.Context, event *nostr.Eve
 	ch.mu.Lock()
 	session, exists := ch.sessions[sessionID]
 	if !exists {
+		prevRelayPubkey, err := hex.DecodeString(event.PubKey)
+		if err != nil {
+			return err
+		}
+
+		previousRelayPubkey, err := btcec.ParsePubKey(prevRelayPubkey)
+		if err != nil {
+			return err
+		}
+
+		senderPubkey, err := btcec.ParsePubKey(packet.Header.SenderPubKey)
+		if err != nil {
+			return err
+		}
+
 		// Create new session
 		session = &Session{
 			ID:                   sessionID,
-			OriginalSenderPubKey: packet.Header.SenderPubKey,
-			PreviousRelayURL:     "",  // Will be populated by previous relay
-			PreviousRelayPubKey:  nil, // Will be populated by previous relay
-			NextRelayURL:         "",  // Will be populated after decryption
+			OriginalSenderPubKey: senderPubkey,
+			PreviousRelayPubKey:  previousRelayPubkey,
 			CreatedAt:            time.Now(),
 		}
 		ch.sessions[sessionID] = session
@@ -106,17 +121,25 @@ func (ch *CircuitHandler) HandleOnionEvent(ctx context.Context, event *nostr.Eve
 	// If there's a next hop, forward the message
 	if nextHopURL != "" {
 		log.Println("forwarding to next Hop")
-		return ch.forwardToNextHop(ctx, nextHopURL, payload, session.OriginalSenderPubKey)
+		return ch.forwardToNextHop(ctx, nextHopURL, payload, session.OriginalSenderPubKey, session.ID)
 	}
 
 	// If this is the final destination, process the inner payload
 	return ch.processFinalPayload(ctx, payload)
 }
 
+// processFinalPayload handles the final payload at the destination
+func (ch *CircuitHandler) processFinalPayload(ctx context.Context, payload []byte) error {
+	// For now, just log the payload - in a real implementation, this would
+	// process the final message content
+	log.Printf("Processing final payload: %s", string(payload))
+	return nil
+}
+
 // forwardToNextHop sends the decrypted payload to the next relay in the circuit
-func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL string, payload []byte, originalSenderKey []byte) error {
-	// Get or create a connection to the next relay (ensuring only one connection per relay)
-	relay, err := ch.getConnection(ctx, nextHopURL)
+func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL string, payload []byte, originalSenderKey *btcec.PublicKey, sessionID string) error {
+	// Get or create a connection specifically for this session
+	relay, err := ch.getConnectionForSession(ctx, nextHopURL, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get connection to %s: %w", nextHopURL, err)
 	}
@@ -130,7 +153,7 @@ func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL strin
 	// Create a new onion packet for the next hop with proper header
 	nextPacket := sphinx.OnionPacket{
 		Header: sphinx.OnionHeader{
-			SenderPubKey:    originalSenderKey,
+			SenderPubKey:    originalSenderKey.SerializeCompressed(),
 			NextRelayURL:    sphinx.Relay{}, // Will be set when the next relay processes it
 			EncryptedLength: len(payload),   // Set the length of the actual content (before padding)
 		},
@@ -167,10 +190,10 @@ func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL strin
 	if err != nil {
 		// If publishing fails, the connection might be stale
 		// Close the connection and try to reconnect
-		ch.closeConnection(nextHopURL)
+		ch.closeConnectionForSession(nextHopURL, sessionID)
 
 		// Try to get a new connection
-		relay, err = ch.getConnection(ctx, nextHopURL)
+		relay, err = ch.getConnectionForSession(ctx, nextHopURL, sessionID)
 		if err != nil {
 			return fmt.Errorf("failed to reconnect to %s: %w", nextHopURL, err)
 		}
@@ -186,38 +209,19 @@ func (ch *CircuitHandler) forwardToNextHop(ctx context.Context, nextHopURL strin
 	return nil
 }
 
-// processFinalPayload handles the final payload when this relay is the destination
-func (ch *CircuitHandler) processFinalPayload(ctx context.Context, payload []byte) error {
-	var finalPayload sphinx.LastHopPayload
-	log.Printf("Pre cbor processing: %+v", payload)
-	err := cbor.Unmarshal(payload, &finalPayload)
-	if err != nil {
-		return err
-	}
-	// Print the final payload/event as requested
-	log.Printf("Reached final destination. Decrypted payload: %+v", string(finalPayload.Payload))
-
-	// In a real implementation, this might involve:
-	// 1. Parsing the payload as a Nostr event
-	// 2. Storing it in the relay's event store
-	// 3. Broadcasting it to connected clients
-	// For now, we just log it as requested
-
-	return nil
-}
-
-// getConnection gets or creates a WebSocket connection to a relay (ensuring only one per relay)
+// getConnection gets or creates a WebSocket connection to a relay
 func (ch *CircuitHandler) getConnection(ctx context.Context, relayURL string) (*nostr.Relay, error) {
-	// Check if we already have a connection to this relay
+	// Check if we already have a connection to this relay in any session
 	ch.mu.RLock()
-	relay, exists := ch.connections[relayURL]
-	ch.mu.RUnlock()
-
-	if exists && relay != nil {
-		// Check if the connection is still alive by checking ConnectionError
-		// Note: This is a simplified check. In practice, you might want more robust health checking.
-		return relay, nil
+	// First check if any existing session has this connection
+	for _, session := range ch.sessions {
+		if session.NextRelayURL == relayURL && session.NextRelay != nil {
+			relay := session.NextRelay
+			ch.mu.RUnlock()
+			return relay, nil
+		}
 	}
+	ch.mu.RUnlock()
 
 	// Create a new connection with timeout
 	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -228,44 +232,8 @@ func (ch *CircuitHandler) getConnection(ctx context.Context, relayURL string) (*
 		return nil, fmt.Errorf("failed to connect to relay %s: %w", relayURL, err)
 	}
 
-	// Store the connection
-	ch.mu.Lock()
-	ch.connections[relayURL] = newRelay
-	ch.mu.Unlock()
-
 	log.Printf("Created new connection to relay: %s", relayURL)
 	return newRelay, nil
-}
-
-// closeConnection closes and removes a connection to a relay
-func (ch *CircuitHandler) closeConnection(relayURL string) {
-	ch.mu.Lock()
-	defer ch.mu.Unlock()
-
-	if relay, exists := ch.connections[relayURL]; exists {
-		if relay != nil {
-			relay.Close()
-		}
-		delete(ch.connections, relayURL)
-	}
-}
-
-// cleanupStaleConnections periodically checks for and removes stale connections
-func (ch *CircuitHandler) cleanupStaleConnections() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		ch.mu.Lock()
-		for relayURL, relay := range ch.connections {
-			if relay != nil {
-				// In a real implementation, you'd check if the connection is still healthy
-				// For now, we'll just keep the connections open
-				_ = relayURL
-			}
-		}
-		ch.mu.Unlock()
-	}
 }
 
 // Close closes all connections
@@ -273,18 +241,68 @@ func (ch *CircuitHandler) Close() {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 
-	for relayURL, relay := range ch.connections {
-		if relay != nil {
-			relay.Close()
+	// Close all connections in sessions
+	for _, session := range ch.sessions {
+		if session.NextRelay != nil {
+			session.NextRelay.Close()
+			session.NextRelay = nil
 		}
-		delete(ch.connections, relayURL)
+		if session.PreviousRelay != nil {
+			session.PreviousRelay.Close()
+			session.PreviousRelay = nil
+		}
 	}
 }
 
-// Helper function for min (since we're using an older Go version)
-func min(a, b int) int {
-	if a < b {
-		return a
+// getConnectionForSession gets or creates a WebSocket connection specifically for a session
+func (ch *CircuitHandler) getConnectionForSession(ctx context.Context, relayURL, sessionID string) (*nostr.Relay, error) {
+	ch.mu.Lock()
+	session, exists := ch.sessions[sessionID]
+	if !exists {
+		ch.mu.Unlock()
+		return nil, fmt.Errorf("session %s not found", sessionID)
 	}
-	return b
+
+	// Check if we already have a connection to this relay for this specific session
+	if session.NextRelayURL == relayURL && session.NextRelay != nil {
+		relay := session.NextRelay
+		ch.mu.Unlock()
+		return relay, nil
+	}
+	ch.mu.Unlock()
+
+	// Create a new connection with timeout
+	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	newRelay, err := nostr.RelayConnect(connectCtx, relayURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to relay %s: %w", relayURL, err)
+	}
+
+	// Store the connection in the session
+	ch.mu.Lock()
+	session.NextRelay = newRelay
+	session.NextRelayURL = relayURL
+	ch.mu.Unlock()
+
+	log.Printf("Created new connection for session %s to relay: %s", sessionID, relayURL)
+	return newRelay, nil
+}
+
+// closeConnectionForSession closes and removes a connection for a specific session
+func (ch *CircuitHandler) closeConnectionForSession(relayURL, sessionID string) {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+
+	session, exists := ch.sessions[sessionID]
+	if !exists {
+		return
+	}
+
+	if session.NextRelayURL == relayURL && session.NextRelay != nil {
+		session.NextRelay.Close()
+		session.NextRelay = nil
+		session.NextRelayURL = ""
+	}
 }

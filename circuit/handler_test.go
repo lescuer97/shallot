@@ -23,8 +23,8 @@ func TestCircuitHandlerCreation(t *testing.T) {
 		t.Fatal("Failed to create circuit handler")
 	}
 
-	if handler.connections == nil {
-		t.Fatal("Connections map not initialized")
+	if handler.sessions == nil {
+		t.Fatal("Sessions map not initialized")
 	}
 }
 
