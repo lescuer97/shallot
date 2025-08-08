@@ -197,6 +197,7 @@ func TestCmdRelayCellCommand3Relays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not decrypt payload with sphinx 1. %+v", err)
 	}
+
 	createPayload, err = sphinx2.DecryptPayload(createPayload, clientSphinx.PublicKey)
 	if err != nil {
 		t.Fatalf("could not decrypt payload with sphinx 2. %+v", err)

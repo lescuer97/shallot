@@ -11,6 +11,10 @@ import (
 	"github.com/fxamacker/cbor/v2"
 )
 
+var (
+	ErrorLengthLongerThanPayload = errors.New("length to take is bigger that slice")
+)
+
 const (
 	MaxPacketSize = 6 * 1024 // 12KB maximum packet size
 )
@@ -40,9 +44,15 @@ type Cell struct {
 	Payload [MaxCellPayloadSize]byte `cbor:"c"`
 }
 
-var (
-	ErrorLengthLongerThanPayload = errors.New("length to take is bigger that slice")
-)
+func (c *Cell) Serialize() ([]byte, error) {
+	encoder := GetCBORStrictEncoder()
+	payload, err := encoder.Marshal(c)
+	if err != nil {
+		return nil, err
+	}
+
+	return payload, nil
+}
 
 func (c *Cell) SetPayloadAndAddPadding(payload []byte) error {
 	paddedContent, err := addPadding(payload, MaxCellPayloadSize)
@@ -80,34 +90,13 @@ type RelayPayload struct {
 	Payload      []byte       `cbor:"p"`
 }
 
-// func (r *RelayPayload) SetPayloadAndAddPadding(payload []byte) error {
-// 	paddedContent, err := addPadding(payload, MaxCellPayloadSize)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	// r.Length = uint16(len(payload))
-// 	r.Payload = [6135]byte(paddedContent)
-// 	return nil
-// }
-// func (c *RelayPayload) GetPayloadWithoutPadding() ([]byte, error) {
-// 	// if c.Length > uint16(len(c.Payload)) {
-// 	// 	return nil, ErrorLengthLongerThanPayload
-// 	// }
-//
-// 	return c.Payload[:c.Length], nil
-// }
-
 type NostrRelay struct {
 	Url    string           `cbor:"url"`
 	Pubkey *btcec.PublicKey `cbor:"pk"`
 }
 
 func GetCBORStrictEncoder() cbor.EncMode {
-	opts := cbor.EncOptions{
-		Sort: cbor.SortCanonical, // Ensures deterministic output
-	}
-
-	encMode, err := opts.EncMode()
+	encMode, err := cbor.CanonicalEncOptions().EncMode()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -116,6 +105,12 @@ func GetCBORStrictEncoder() cbor.EncMode {
 
 func GetCBORStrictUnmarshaller() cbor.DecMode {
 	strictDecOptions := cbor.DecOptions{
+		// Strict decoding of integers
+		IntDec: cbor.IntDecConvertNone,
+		// Require maps to have sorted keys
+		MapKeyByteString: cbor.MapKeyByteStringForbidden,
+		// Strict float handling
+		// No extra elements in arrays or maps
 		ExtraReturnErrors: cbor.ExtraDecErrorUnknownField,
 	}
 
