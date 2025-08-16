@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/lescuer97/shallot/sphinx"
 	"github.com/nbd-wtf/go-nostr"
 )
 
@@ -38,24 +38,19 @@ func TestProcessNIP66EventRealNostrKey(t *testing.T) {
 	}
 
 	// Check that it's 32 bytes
-	if len(relayInfo.PublicKey) != 32 {
-		t.Errorf("Expected public key to be 32 bytes, got %d", len(relayInfo.PublicKey))
+	pubKeyBytes := relayInfo.PublicKey.SerializeCompressed()
+	// Remove the 0x02 prefix to get the 32-byte X-only key
+	xOnlyPubKey := pubKeyBytes[1:]
+	if len(xOnlyPubKey) != 32 {
+		t.Errorf("Expected public key to be 32 bytes, got %d", len(xOnlyPubKey))
 	}
 
 	// Check that it matches the original
 	expectedBytes, _ := hex.DecodeString(realNostrPubKey)
 	for i, b := range expectedBytes {
-		if relayInfo.PublicKey[i] != b {
-			t.Errorf("Byte mismatch at position %d: expected %x, got %x", i, b, relayInfo.PublicKey[i])
+		if xOnlyPubKey[i] != b {
+			t.Errorf("Byte mismatch at position %d: expected %x, got %x", i, b, xOnlyPubKey[i])
 		}
-	}
-
-	// Verify it's a valid secp256k1 point by converting to full public key
-	// Prepend 0x02 byte to make it a compressed public key format
-	fullPubKeyBytes := append([]byte{0x02}, relayInfo.PublicKey...)
-	_, err = secp256k1.ParsePubKey(fullPubKeyBytes)
-	if err != nil {
-		t.Errorf("Failed to parse as valid secp256k1 public key: %v", err)
 	}
 }
 
@@ -87,15 +82,18 @@ func TestProcessNIP66Event(t *testing.T) {
 	}
 
 	// Check that it's 32 bytes
-	if len(relayInfo.PublicKey) != 32 {
-		t.Errorf("Expected public key to be 32 bytes, got %d", len(relayInfo.PublicKey))
+	pubKeyBytes := relayInfo.PublicKey.SerializeCompressed()
+	// Remove the 0x02 prefix to get the 32-byte X-only key
+	xOnlyPubKey := pubKeyBytes[1:]
+	if len(xOnlyPubKey) != 32 {
+		t.Errorf("Expected public key to be 32 bytes, got %d", len(xOnlyPubKey))
 	}
 
 	// Check that it matches the original
 	expectedBytes, _ := hex.DecodeString(validXOnlyPubKey)
 	for i, b := range expectedBytes {
-		if relayInfo.PublicKey[i] != b {
-			t.Errorf("Byte mismatch at position %d: expected %x, got %x", i, b, relayInfo.PublicKey[i])
+		if xOnlyPubKey[i] != b {
+			t.Errorf("Byte mismatch at position %d: expected %x, got %x", i, b, xOnlyPubKey[i])
 		}
 	}
 
@@ -184,30 +182,27 @@ func TestProcessNIP66EventInvalidCurvePoint(t *testing.T) {
 }
 
 func TestGetOnionCapableRelays(t *testing.T) {
-	// Create mock public keys (32-byte arrays)
-	pubKey1 := make([]byte, 32)
-	pubKey1[0] = 0x01
-	pubKey2 := make([]byte, 32)
-	pubKey2[0] = 0x02
-	pubKey3 := make([]byte, 32)
-	pubKey3[0] = 0x03
+	// Create mock sphinx instances to get valid public keys
+	sphinx1, _ := sphinx.NewSphinx()
+	sphinx2, _ := sphinx.NewSphinx()
+	sphinx3, _ := sphinx.NewSphinx()
 
 	// Create a map with mixed relay types
 	relays := map[string]RelayInfo{
 		"relay1": {
-			PublicKey:         pubKey1,
+			PublicKey:         sphinx1.PublicKey,
 			RelayURL:          "wss://relay1.com",
 			SupportsOnionKind: true,
 			LastAnnounced:     time.Now(),
 		},
 		"relay2": {
-			PublicKey:         pubKey2,
+			PublicKey:         sphinx2.PublicKey,
 			RelayURL:          "wss://relay2.com",
 			SupportsOnionKind: false,
 			LastAnnounced:     time.Now(),
 		},
 		"relay3": {
-			PublicKey:         pubKey3,
+			PublicKey:         sphinx3.PublicKey,
 			RelayURL:          "wss://relay3.com",
 			SupportsOnionKind: true,
 			LastAnnounced:     time.Now(),
