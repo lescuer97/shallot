@@ -66,6 +66,9 @@ func (c *CircuitHandler) ProcessNostrEvent(evt *nostr.Event) (bool, *sphinx.Cell
 		if err != nil {
 			return isFinalStep, nil, nil, fmt.Errorf("cborUnmarshaller.Unmarshal(contentBytes, &createCell). %w", err)
 		}
+
+		log.Printf("\n createCell: %+v", createCell)
+		log.Printf("\n senderPublicKey: %+v",  createCell.SenderPubkey.SerializeCompressed())
 		nextHopCreateCircuit, err := c.processCreateCell(createCell)
 		if err != nil {
 			return isFinalStep, nil, nil, fmt.Errorf("c.processCreateCell(createCell). %w", err)
@@ -91,7 +94,7 @@ func (c *CircuitHandler) ProcessNostrEvent(evt *nostr.Event) (bool, *sphinx.Cell
 	return isFinalStep, nil, nil, fmt.Errorf("could not process the relay command")
 }
 
-func (c *CircuitHandler) getGeneralKey() *sphinx.Sphinx {
+func (c *CircuitHandler) GetGeneralKey() *sphinx.Sphinx {
 	return c.generalKey
 }
 
@@ -162,6 +165,7 @@ func (c *CircuitHandler) processCreateCell(cell sphinx.CreateCircuitCell) (*sphi
 		SenderPubKey:    cell.SenderPubkey,
 	}
 
+	log.Printf("creating new circuit. %+v", newCircuit)
 	c.circuits[newCircuit.Id] = newCircuit
 	if payload.NextRelay == "" {
 		return nil, nil

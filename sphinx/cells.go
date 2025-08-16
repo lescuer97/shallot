@@ -39,7 +39,7 @@ const MaxCellPayloadSize = MaxPacketSize - 7
 
 type Cell struct {
 	Id      [4]byte                  `cbor:"i"`
-	Cmd     CellCommand              `cbor:"c"`
+	Cmd     CellCommand              `cbor:"cmd"`
 	Length  uint16                   `cbor:"l"`
 	Payload [MaxCellPayloadSize]byte `cbor:"c"`
 }
@@ -145,6 +145,7 @@ func generateCryptoID() ([4]byte, error) {
 	return id, nil
 }
 
+// / The first item in the relay list is the destination relay
 func (s *Sphinx) MakeCreateCircuitCell(relays []NostrRelay) (CreateCircuitCell, error) {
 	strictCbor := GetCBORStrictEncoder()
 	if s.PublicKey == nil {

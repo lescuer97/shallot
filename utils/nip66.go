@@ -5,15 +5,17 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"time"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
 	"github.com/nbd-wtf/go-nostr"
 )
 
 // RelayInfo stores information about a relay discovered via NIP-66
 type RelayInfo struct {
-	PublicKey         []byte // 32-byte X-only public key as used in Bitcoin Taproot
+	PublicKey         *btcec.PublicKey
 	RelayURL          string
 	SupportsOnionKind bool
 	LastAnnounced     time.Time
@@ -63,6 +65,7 @@ eventLoop:
 			// Process the NIP-66 event
 			relayInfo, err := processNIP66Event(event)
 			if err != nil {
+				log.Printf("error processing nip66 event %+v",err)
 				continue
 			}
 
@@ -103,13 +106,13 @@ func processNIP66Event(event *nostr.Event) (RelayInfo, error) {
 	}
 
 	// Validate that it's a valid X coordinate on the secp256k1 curve
-	_, err = secp256k1.ParsePubKey(append([]byte{0x02}, pubKeyBytes...))
+	pubkey, err := schnorr.ParsePubKey(append([]byte{0x02}, pubKeyBytes...))
 	if err != nil {
 		return RelayInfo{}, fmt.Errorf("invalid public key: not a valid point on secp256k1 curve")
 	}
 
 	relayInfo := RelayInfo{
-		PublicKey:     pubKeyBytes, // Store the 32-byte X-only public key
+		PublicKey:     pubkey,
 		LastAnnounced: event.CreatedAt.Time(),
 	}
 
