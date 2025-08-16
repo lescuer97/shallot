@@ -5,7 +5,6 @@ import (
 )
 
 func TestCmdCreatePayload3Relays(t *testing.T) {
-
 	clientSphinx, err := NewSphinx()
 	if err != nil {
 		t.Fatalf("could not make clientSphinx. %+v", err)

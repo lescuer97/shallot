@@ -88,7 +88,7 @@ func TestNostrEventBeingOnionNotCorrectKind(t *testing.T) {
 	if cell != nil {
 		t.Errorf("Cell should be nil becasue processing should not have happened. %+v", cell)
 	}
-	if  err != nil {
+	if err != nil {
 		t.Errorf("there should not be an error %+v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestNostrEventBeingOnionWithNonExistingCircuitId(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not generate relay handler. %+v", err)
 	}
-	initCell := sphinx.Cell {
+	initCell := sphinx.Cell{
 		Id: [4]byte{10, 11, 21, 32},
 	}
 	err = initCell.SetPayloadAndAddPadding([]byte("test"))
@@ -113,13 +113,13 @@ func TestNostrEventBeingOnionWithNonExistingCircuitId(t *testing.T) {
 		t.Fatalf("could not create cell bytes %+v", err)
 	}
 	event := nostr.Event{
-		Kind: OnionMsgKind,
+		Kind:    OnionMsgKind,
 		Content: hex.EncodeToString(cellbytes),
 	}
 
 	log.Printf("\n event.kind: %+v", event.Kind)
 	_, _, err = circuitHandler.nostrEventIsOnionResponse(event)
-	if errors.Is(err,  ErrCircuitDoesntExists)   {
+	if errors.Is(err, ErrCircuitDoesntExists) {
 		t.Errorf("there should be an error about circuit not existing %+v", err)
 	}
 

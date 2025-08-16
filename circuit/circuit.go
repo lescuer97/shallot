@@ -40,6 +40,57 @@ func NewCircuitHandler() (CircuitHandler, error) {
 	}, nil
 }
 
+func (c *CircuitHandler) ProcessNostrEvent(evt *nostr.Event) (bool, *sphinx.CellCommand, *sphinx.RelayCommand, error) {
+	isFinalStep := false
+	if evt.Kind != OnionMsgKind {
+		return isFinalStep, nil, nil, ErrNoOnionContent
+	}
+	cborUnmarshaller := sphinx.GetCBORStrictUnmarshaller()
+
+	//INFO: Get HEX value into bytes
+	contentBytes, err := hex.DecodeString(evt.Content)
+	if err != nil {
+		return isFinalStep, nil, nil, fmt.Errorf("hex.DecodeString(evt.Content). %w", err)
+	}
+
+	cell := sphinx.Cell{}
+	err = cborUnmarshaller.Unmarshal(contentBytes, &cell)
+	if err != nil {
+		return isFinalStep, nil, nil, fmt.Errorf("cborUnmarshaller.Unmarshal(contentBytes, &cell). %w", err)
+	}
+
+	switch cell.Cmd {
+	case sphinx.Create:
+		createCell := sphinx.CreateCircuitCell{}
+		err = cborUnmarshaller.Unmarshal(contentBytes, &createCell)
+		if err != nil {
+			return isFinalStep, nil, nil, fmt.Errorf("cborUnmarshaller.Unmarshal(contentBytes, &createCell). %w", err)
+		}
+		nextHopCreateCircuit, err := c.processCreateCell(createCell)
+		if err != nil {
+			return isFinalStep, nil, nil, fmt.Errorf("c.processCreateCell(createCell). %w", err)
+		}
+
+		if nextHopCreateCircuit == nil {
+			isFinalStep = true
+			return isFinalStep, &cell.Cmd, nil, nil
+		}
+
+		err = c.sendCreateCircuitToNextHop(nextHopCreateCircuit)
+		if err != nil {
+			return isFinalStep, nil, nil, fmt.Errorf("c.processCreateCell(createCell). %w", err)
+		}
+	case sphinx.Relay_CMD:
+		log.Panicf("still not relaying messages")
+	case sphinx.Destroy:
+		log.Panicf("still not implemented destroying messages")
+	default:
+		return isFinalStep, nil, nil, fmt.Errorf("unkown onion relay command")
+	}
+
+	return isFinalStep, nil, nil, fmt.Errorf("could not process the relay command")
+}
+
 func (c *CircuitHandler) getGeneralKey() *sphinx.Sphinx {
 	return c.generalKey
 }
@@ -130,42 +181,10 @@ func (c *CircuitHandler) processCreateCell(cell sphinx.CreateCircuitCell) (*sphi
 	}
 
 	return &nextHop, nil
-
-}
-
-func (c *CircuitHandler) ProcessCell(cell sphinx.Cell, rawPayload []byte) error {
-	unmarshaller := sphinx.GetCBORStrictUnmarshaller()
-	switch cell.Cmd {
-	case sphinx.Create:
-		var createCircuitCell sphinx.CreateCircuitCell
-		err := unmarshaller.Unmarshal(rawPayload, &createCircuitCell)
-		if err != nil {
-			return err
-		}
-
-		nextHopCreateCell, err := c.processCreateCell(createCircuitCell)
-		if err != nil {
-			return nil
-		}
-
-		if nextHopCreateCell == nil {
-			return nil
-		}
-		return nil
-	case sphinx.Relay_CMD:
-		log.Panicf("Still not implemented relay_cmd")
-	case sphinx.Destroy:
-		log.Panicf("still not implemented destroy")
-
-	default:
-		return ErrUnknownCellCommand
-
-	}
-
-	return nil
 }
 
 func (c *CircuitHandler) makeResponse(payload []byte, cellCmd sphinx.CellCommand, circuitId CircuitId) (*sphinx.Cell, error) {
+	log.Panicf("responses  in relays are not implemented yet")
 
 	circuit, exists := c.circuits[circuitId]
 	if !exists {
@@ -180,7 +199,7 @@ func (c *CircuitHandler) makeResponse(payload []byte, cellCmd sphinx.CellCommand
 	return &cell, nil
 }
 
-func (c *CircuitHandler) nostrEventIsOnionResponse(event nostr.Event) (bool,*sphinx.Cell,  error) {
+func (c *CircuitHandler) nostrEventIsOnionResponse(event nostr.Event) (bool, *sphinx.Cell, error) {
 	if event.Kind != OnionMsgKind {
 		return false, nil, nil
 	}
@@ -189,30 +208,29 @@ func (c *CircuitHandler) nostrEventIsOnionResponse(event nostr.Event) (bool,*sph
 	decoder := sphinx.GetCBORStrictUnmarshaller()
 	contentBytes, err := hex.DecodeString(event.Content)
 	if err != nil {
-		return false,nil, err
+		return false, nil, err
 	}
 
 	err = decoder.Unmarshal(contentBytes, cell)
 	if err != nil {
-		return false,nil, err
+		return false, nil, err
 	}
 
 	circuit, exists := c.circuits[cell.Id]
 	if !exists {
-		return false,nil, ErrCircuitDoesntExists
+		return false, nil, ErrCircuitDoesntExists
 	}
 
-	if event.PubKey == hex.EncodeToString(circuit.NextRelayPubkey.SerializeCompressed()){
-		return true, &cell,  nil
+	if event.PubKey == hex.EncodeToString(circuit.NextRelayPubkey.SerializeCompressed()) {
+		return true, &cell, nil
 	}
 
 	return false, &cell, nil
 }
 
-
 // TODO: each circuit should have it's own independent sphinx key.
 type Circuit struct {
-	Id              CircuitId          `cbor:"i"`
+	Id              CircuitId        `cbor:"i"`
 	Active          bool             `cbor:"a"`
 	SenderPubKey    *btcec.PublicKey `cbor:"s"`
 	NextRelay       string           `cbor:"p"`
@@ -232,4 +250,3 @@ func NewCircuits() (CircuitHandler, error) {
 	}, nil
 
 }
-

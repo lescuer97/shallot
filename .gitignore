@@ -21,6 +21,8 @@
 .idea/
 .vscode/
 
+db
+
 
 # binaries 
 client
