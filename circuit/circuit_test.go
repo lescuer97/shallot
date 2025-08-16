@@ -1,9 +1,13 @@
 package circuit
 
 import (
+	"encoding/hex"
+	"errors"
+	"log"
 	"testing"
 
 	"github.com/lescuer97/shallot/sphinx"
+	"github.com/nbd-wtf/go-nostr"
 )
 
 func TestCircuitNextHopDecryption(t *testing.T) {
@@ -46,6 +50,7 @@ func TestCircuitNextHopDecryption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not parse final payload from relay %+v", err)
 	}
+
 	if finalPayload.NextRelay != "" {
 		t.Errorf("next relay is not correct %+v. should be empty", finalPayload.NextRelay)
 
@@ -64,4 +69,58 @@ func TestCircuitNextHopDecryption(t *testing.T) {
 		t.Fatalf("final cell should be empty. %+v", err)
 
 	}
+}
+
+func TestNostrEventBeingOnionNotCorrectKind(t *testing.T) {
+	event := nostr.Event{
+		Kind: nostr.KindArticle,
+	}
+
+	circuitHandler, err := NewCircuitHandler()
+	if err != nil {
+		t.Fatalf("Could not generate relay handler. %+v", err)
+	}
+
+	isOnion, cell, err := circuitHandler.nostrEventIsOnionResponse(event)
+	if isOnion {
+		t.Errorf("the event should not be an onion")
+	}
+	if cell != nil {
+		t.Errorf("Cell should be nil becasue processing should not have happened. %+v", cell)
+	}
+	if  err != nil {
+		t.Errorf("there should not be an error %+v", err)
+	}
+
+}
+
+func TestNostrEventBeingOnionWithNonExistingCircuitId(t *testing.T) {
+	circuitHandler, err := NewCircuitHandler()
+	if err != nil {
+		t.Fatalf("Could not generate relay handler. %+v", err)
+	}
+	initCell := sphinx.Cell {
+		Id: [4]byte{10, 11, 21, 32},
+	}
+	err = initCell.SetPayloadAndAddPadding([]byte("test"))
+	if err != nil {
+		t.Fatalf("could not set padding to cell %+v", err)
+	}
+
+	cborEnc := sphinx.GetCBORStrictEncoder()
+	cellbytes, err := cborEnc.Marshal(initCell)
+	if err != nil {
+		t.Fatalf("could not create cell bytes %+v", err)
+	}
+	event := nostr.Event{
+		Kind: OnionMsgKind,
+		Content: hex.EncodeToString(cellbytes),
+	}
+
+	log.Printf("\n event.kind: %+v", event.Kind)
+	_, _, err = circuitHandler.nostrEventIsOnionResponse(event)
+	if errors.Is(err,  ErrCircuitDoesntExists)   {
+		t.Errorf("there should be an error about circuit not existing %+v", err)
+	}
+
 }

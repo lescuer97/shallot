@@ -64,6 +64,21 @@ func (c *Cell) SetPayloadAndAddPadding(payload []byte) error {
 	return nil
 }
 
+func (s *Sphinx) MakeCellFromPayload(cmd CellCommand, payload []byte, receiverPubkey *btcec.PublicKey) (Cell, error) {
+	cell := Cell{}
+
+	encryptedPayload, err := s.EncryptPayload(payload, receiverPubkey)
+	if err != nil {
+		return cell, err
+	}
+	err = cell.SetPayloadAndAddPadding(encryptedPayload)
+	if err != nil {
+		return cell, err
+	}
+
+	return cell, nil
+}
+
 func (c *Cell) GetPayloadWithoutPadding() ([]byte, error) {
 	if c.Length > uint16(len(c.Payload)) {
 		return nil, ErrorLengthLongerThanPayload

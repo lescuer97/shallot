@@ -12,7 +12,7 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 )
 
-const OnionMsgKind = 720
+const OnionMsgKind int = 720
 
 var (
 	ErrNoOnionContent       = errors.New("no onion content")
@@ -21,8 +21,9 @@ var (
 	ErrCircuitDoesntExists  = errors.New("Circuit doesn't exists")
 )
 
+type CircuitId = [4]byte
 type CircuitHandler struct {
-	circuits        map[[4]byte]Circuit
+	circuits        map[CircuitId]Circuit
 	relayConnection map[string]*nostr.Relay
 	generalKey      *sphinx.Sphinx
 }
@@ -33,13 +34,13 @@ func NewCircuitHandler() (CircuitHandler, error) {
 		return CircuitHandler{}, err
 	}
 	return CircuitHandler{
-		circuits:        make(map[[4]byte]Circuit),
+		circuits:        make(map[CircuitId]Circuit),
 		relayConnection: make(map[string]*nostr.Relay),
 		generalKey:      sphinx,
 	}, nil
 }
 
-func (c *CircuitHandler) GeneratKey() *sphinx.Sphinx {
+func (c *CircuitHandler) getGeneralKey() *sphinx.Sphinx {
 	return c.generalKey
 }
 
@@ -102,9 +103,6 @@ func (c *CircuitHandler) processCreateCell(cell sphinx.CreateCircuitCell) (*sphi
 	if err != nil {
 		return nil, err
 	}
-
-	// log.Printf("payload: %+v", payload)
-
 	newCircuit := Circuit{
 		Id:              cell.Id,
 		Active:          true,
@@ -167,9 +165,54 @@ func (c *CircuitHandler) ProcessCell(cell sphinx.Cell, rawPayload []byte) error 
 	return nil
 }
 
+func (c *CircuitHandler) makeResponse(payload []byte, cellCmd sphinx.CellCommand, circuitId CircuitId) (*sphinx.Cell, error) {
+
+	circuit, exists := c.circuits[circuitId]
+	if !exists {
+		return nil, ErrCircuitDoesntExists
+	}
+
+	cell, err := c.generalKey.MakeCellFromPayload(cellCmd, payload, circuit.SenderPubKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &cell, nil
+}
+
+func (c *CircuitHandler) nostrEventIsOnionResponse(event nostr.Event) (bool,*sphinx.Cell,  error) {
+	if event.Kind != OnionMsgKind {
+		return false, nil, nil
+	}
+
+	var cell sphinx.Cell
+	decoder := sphinx.GetCBORStrictUnmarshaller()
+	contentBytes, err := hex.DecodeString(event.Content)
+	if err != nil {
+		return false,nil, err
+	}
+
+	err = decoder.Unmarshal(contentBytes, cell)
+	if err != nil {
+		return false,nil, err
+	}
+
+	circuit, exists := c.circuits[cell.Id]
+	if !exists {
+		return false,nil, ErrCircuitDoesntExists
+	}
+
+	if event.PubKey == hex.EncodeToString(circuit.NextRelayPubkey.SerializeCompressed()){
+		return true, &cell,  nil
+	}
+
+	return false, &cell, nil
+}
+
+
 // TODO: each circuit should have it's own independent sphinx key.
 type Circuit struct {
-	Id              [4]byte          `cbor:"i"`
+	Id              CircuitId          `cbor:"i"`
 	Active          bool             `cbor:"a"`
 	SenderPubKey    *btcec.PublicKey `cbor:"s"`
 	NextRelay       string           `cbor:"p"`
@@ -185,27 +228,8 @@ func NewCircuits() (CircuitHandler, error) {
 
 	return CircuitHandler{
 		generalKey: sphinx,
-		circuits:   make(map[[4]byte]Circuit),
+		circuits:   make(map[CircuitId]Circuit),
 	}, nil
 
 }
 
-func ProcessNostrEventToCell(event *nostr.Event) (sphinx.Cell, error) {
-	if event.Kind != 720 {
-		return sphinx.Cell{}, ErrNoOnionContent
-	}
-
-	var cell sphinx.Cell
-	decoder := sphinx.GetCBORStrictUnmarshaller()
-
-	contentBytes, err := hex.DecodeString(event.Content)
-	if err != nil {
-		return sphinx.Cell{}, err
-	}
-
-	err = decoder.Unmarshal(contentBytes, cell)
-	if err != nil {
-		return sphinx.Cell{}, err
-	}
-	return cell, nil
-}
