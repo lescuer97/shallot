@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"log"
-	"slices"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/lescuer97/shallot/circuit"
@@ -43,10 +43,10 @@ func main() {
 	relayCount := 0
 
 	for url, relayInfo := range onionRelays {
-		relaysList = append(relaysList, sphinx.NostrRelay{Url: url,Pubkey: relayInfo.PublicKey })
+		relaysList = append(relaysList, sphinx.NostrRelay{Url: url, Pubkey: relayInfo.PublicKey})
 
 		relayCount++
-		if relayCount >= 2 {
+		if relayCount >= 3 {
 			break
 		}
 	}
@@ -55,13 +55,9 @@ func main() {
 	}
 
 	log.Printf("\n relaysList: %+v", relaysList)
-	organizedRelays := relaysList
-	slices.Reverse(organizedRelays)
-
-	log.Printf("\n organizedRelays: %+v", organizedRelays)
 
 	// First create a circuit relay
-	relay := nostr.NewRelay(context.Background(), organizedRelays[0].Url)
+	relay := nostr.NewRelay(context.Background(), relaysList[len(relaysList)-1].Url)
 	err = relay.Connect(context.Background())
 	if err != nil {
 		log.Panicf("relay.Connect(context.Background()). %v", err)
@@ -72,24 +68,41 @@ func main() {
 		log.Printf("could not make circuit payload. %v", err)
 	}
 
-
-	// encoder := sphinx.GetCBORStrictEncoder()
 	createCircuitBytes, err := cbor.Marshal(createCircuitCell)
 	if err != nil {
-		log.Panicf("relay.Connect(context.Background()). %v", err)
+		log.Panicf("cbor.Marshal(createCircuitCell). %v", err)
 	}
-	// log.Printf("createCircuitByes %x", createCircuitBytes)
 
 	log.Printf("snederPublicKey: %x", sphinxKey.PublicKey.SerializeCompressed())
-	onionEvent := nostr.Event{Kind:circuit.OnionMsgKind, Content: hex.EncodeToString(createCircuitBytes) }
-	// log.Printf("onionEvent %+v", onionEvent)
-
+	onionEvent := nostr.Event{Kind: circuit.OnionMsgKind, Content: hex.EncodeToString(createCircuitBytes)}
 	err = onionEvent.Sign(hex.EncodeToString(sphinxKey.PrivateKey.Serialize()))
 	if err != nil {
 		log.Panicf("could not sign onion event. %v", err)
 	}
 
 	err = relay.Publish(context.Background(), onionEvent)
+	if err != nil {
+		log.Printf("could not publish event kind")
+	}
+
+	time.Sleep(2 * time.Second)
+	log.Printf("making message to send to relay")
+	relayCell, err := sphinxKey.MakeRelayCircuitCell(createCircuitCell.Id, relaysList, []byte("test"), sphinx.Store)
+	if err != nil {
+		log.Printf("could not make circuit payload. %v", err)
+	}
+	relayCellBytes, err := cbor.Marshal(relayCell)
+	if err != nil {
+		log.Panicf("cbor.Marshal(relayCell). %v", err)
+	}
+
+	relayCellOnionEvent := nostr.Event{Kind: circuit.OnionMsgKind, Content: hex.EncodeToString(relayCellBytes)}
+	err = relayCellOnionEvent.Sign(hex.EncodeToString(sphinxKey.PrivateKey.Serialize()))
+	if err != nil {
+		log.Panicf("could not sign onion event. %v", err)
+	}
+
+	err = relay.Publish(context.Background(), relayCellOnionEvent)
 	if err != nil {
 		log.Printf("could not publish event kind")
 	}

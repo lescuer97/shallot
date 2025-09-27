@@ -35,55 +35,59 @@ func main() {
 	// policies.ApplySaneDefaults(relay)
 
 	relay.StoreEvent = append(relay.StoreEvent,
-	func(ctx context.Context, event *nostr.Event) error {
-		// TODO: check if the event is an onion event and if it send it to the circuit manager. if not do a normal
-		// operation.
-		if event.Kind == circuit.OnionMsgKind {
-			isFinal, cellCommand, relayCommand, err := circuitHandler.ProcessNostrEvent(event)
-			if err != nil {
-				log.Printf("Something went wrong. %+v", err)
+		func(ctx context.Context, event *nostr.Event) error {
+			if event.Kind == circuit.OnionMsgKind {
+				isFinal, cellCommand, _, err := circuitHandler.ProcessNostrEvent(event)
+				if err != nil {
+					log.Printf("Something went wrong. %+v", err)
+				}
+
+				if isFinal && cellCommand == nil {
+					log.Panicf("if the last hop is final there should have always been some end command")
+				}
+
+				log.Printf("\n LastStep: %+v", isFinal)
+				log.Printf("\n finished a call to: %+v", *cellCommand)
+				if isFinal {
+					switch *cellCommand {
+					case sphinx.Relay_CMD:
+						// log.Printf("created a new circuit for messaging")
+					case sphinx.Destroy:
+						log.Panicf("Destroy relay has not been implemented yet")
+
+					}
+				}
+
+			} else {
+				db.SaveEvent(ctx, event)
 			}
 
-			if isFinal && cellCommand == nil {
-				log.Panicf("if the last hop is final there should have always been some end command")
-			}
-
-			if isFinal && relayCommand != nil {
-
-			}
-
-		} else {
-			db.SaveEvent(ctx, event)
-		}
-
-		return nil
-	},
-)
+			return nil
+		},
+	)
 	relay.ReplaceEvent = append(relay.ReplaceEvent,
-	func(ctx context.Context, event *nostr.Event) error {
-		// TODO: check if the event is an onion event and if it send it to the circuit manager. if not do a normal
-		// operation.
-		if event.Kind == circuit.OnionMsgKind {
-			isFinal, cellCommand, relayCommand, err := circuitHandler.ProcessNostrEvent(event)
-			if err != nil {
-				log.Printf("Something went wrong. %+v", err)
+		func(ctx context.Context, event *nostr.Event) error {
+			if event.Kind == circuit.OnionMsgKind {
+				isFinal, cellCommand, relayCommand, err := circuitHandler.ProcessNostrEvent(event)
+				if err != nil {
+					log.Printf("Something went wrong. %+v", err)
+				}
+
+				if isFinal && cellCommand == nil {
+					log.Panicf("if the last hop is final there should have always been some end command")
+				}
+
+				if isFinal && relayCommand != nil {
+					db.SaveEvent(ctx, event)
+				}
+
+			} else {
+				db.SaveEvent(ctx, event)
 			}
 
-			if isFinal && cellCommand == nil {
-				log.Panicf("if the last hop is final there should have always been some end command")
-			}
-
-			if isFinal && relayCommand != nil {
-
-			}
-
-		} else {
-			db.SaveEvent(ctx, event)
-		}
-
-		return nil
-	},
-)
+			return nil
+		},
+	)
 
 	// relay.StoreEvent = append(relay.StoreEvent, db.SaveEvent)
 	relay.QueryEvents = append(relay.QueryEvents, db.QueryEvents)
@@ -91,8 +95,7 @@ func main() {
 	relay.DeleteEvent = append(relay.DeleteEvent, db.DeleteEvent)
 	relay.ReplaceEvent = append(relay.ReplaceEvent, db.ReplaceEvent)
 
-
-		// Generate and publish NIP-66 relay discovery event
+	// Generate and publish NIP-66 relay discovery event
 	relayURL := fmt.Sprintf("ws://localhost:%v", *port)
 	publishRelayDiscoveryEvent(circuitHandler.GetGeneralKey(), relayURL)
 
@@ -159,4 +162,3 @@ func publishToLocalRelay(event nostr.Event) {
 
 	fmt.Printf("✅ Successfully published NIP-66 event to local relay\n")
 }
-

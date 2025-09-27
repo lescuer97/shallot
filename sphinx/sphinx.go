@@ -71,6 +71,7 @@ func (s *Sphinx) EncryptPayload(payload []byte, key *btcec.PublicKey) ([]byte, e
 		log.Panicf("encryption key is nil.")
 	}
 	sharedKey := s.makeSharedKey(key)
+	log.Printf("\n sharedKey: encryption %x", sharedKey.Serialize())
 	encryptedPayload, err := encrypt(payload, sharedKey.Serialize())
 	if err != nil {
 		return nil, err
@@ -87,6 +88,7 @@ func (s *Sphinx) DecryptPayload(encryptedPayload []byte, key *btcec.PublicKey) (
 		log.Panicf("encryption key is nil.")
 	}
 	sharedKey := s.makeSharedKey(key)
+	log.Printf("\n sharedKey decryption: %x", sharedKey.Serialize())
 	decryptedPayload, err := decrypt(encryptedPayload, sharedKey.Serialize())
 	if err != nil {
 		return nil, err

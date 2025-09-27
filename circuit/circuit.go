@@ -66,9 +66,6 @@ func (c *CircuitHandler) ProcessNostrEvent(evt *nostr.Event) (bool, *sphinx.Cell
 		if err != nil {
 			return isFinalStep, nil, nil, fmt.Errorf("cborUnmarshaller.Unmarshal(contentBytes, &createCell). %w", err)
 		}
-
-		log.Printf("\n createCell: %+v", createCell)
-		log.Printf("\n senderPublicKey: %+v",  createCell.SenderPubkey.SerializeCompressed())
 		nextHopCreateCircuit, err := c.processCreateCell(createCell)
 		if err != nil {
 			return isFinalStep, nil, nil, fmt.Errorf("c.processCreateCell(createCell). %w", err)
@@ -83,8 +80,23 @@ func (c *CircuitHandler) ProcessNostrEvent(evt *nostr.Event) (bool, *sphinx.Cell
 		if err != nil {
 			return isFinalStep, nil, nil, fmt.Errorf("c.processCreateCell(createCell). %w", err)
 		}
+		return isFinalStep, &cell.Cmd, nil, nil
 	case sphinx.Relay_CMD:
-		log.Panicf("still not relaying messages")
+		nextHopRelay, err := c.processRelayCell(cell)
+		if err != nil {
+			return isFinalStep, nil, nil, fmt.Errorf("c.processRelayCell(cell). %w", err)
+		}
+
+		if nextHopRelay == nil {
+			isFinalStep = true
+			return isFinalStep, &cell.Cmd, nil, nil
+		}
+
+		err = c.sendCellToNextHop(nextHopRelay)
+		if err != nil {
+			return isFinalStep, nil, nil, fmt.Errorf("c.processCreateCell(createCell). %w", err)
+		}
+		return isFinalStep, &cell.Cmd, nil, nil
 	case sphinx.Destroy:
 		log.Panicf("still not implemented destroying messages")
 	default:
@@ -98,6 +110,23 @@ func (c *CircuitHandler) GetGeneralKey() *sphinx.Sphinx {
 	return c.generalKey
 }
 
+func (c *CircuitHandler) sendCellToNextHop(cell *sphinx.Cell) error {
+	if cell == nil {
+		return fmt.Errorf("create circuit cell is nil")
+	}
+	unmarshaller := sphinx.GetCBORStrictEncoder()
+	payload, err := unmarshaller.Marshal(cell)
+	if err != nil {
+		return err
+	}
+
+	err = c.sendPayloadToNextHop(payload, cell.Id)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
 func (c *CircuitHandler) sendCreateCircuitToNextHop(cell *sphinx.CreateCircuitCell) error {
 	if cell == nil {
 		return fmt.Errorf("create circuit cell is nil")
@@ -108,16 +137,25 @@ func (c *CircuitHandler) sendCreateCircuitToNextHop(cell *sphinx.CreateCircuitCe
 		return err
 	}
 
-	event := nostr.Event{
-		Kind:    OnionMsgKind,
-		Content: hex.EncodeToString(payload),
-	}
-	err = event.Sign(c.generalKey.PrivateKey.Key.String())
+	err = c.sendPayloadToNextHop(payload, cell.Id)
 	if err != nil {
 		return err
 	}
 
-	circuit, exists := c.circuits[cell.Id]
+	return nil
+}
+
+func (c *CircuitHandler) sendPayloadToNextHop(content []byte, circuitId CircuitId) error {
+	event := nostr.Event{
+		Kind:    OnionMsgKind,
+		Content: hex.EncodeToString(content),
+	}
+	err := event.Sign(c.generalKey.PrivateKey.Key.String())
+	if err != nil {
+		return err
+	}
+
+	circuit, exists := c.circuits[circuitId]
 	if !exists {
 		return ErrCircuitDoesntExists
 	}
@@ -133,7 +171,6 @@ func (c *CircuitHandler) sendCreateCircuitToNextHop(cell *sphinx.CreateCircuitCe
 			return err
 		}
 		c.relayConnection[circuit.NextRelay] = relay
-		return nil
 	}
 
 	if !relay.IsConnected() {
@@ -143,8 +180,48 @@ func (c *CircuitHandler) sendCreateCircuitToNextHop(cell *sphinx.CreateCircuitCe
 		}
 	}
 
+	log.Printf("\n event %+v", event)
 	err = relay.Publish(ctx, event)
 	return nil
+
+}
+
+func (c *CircuitHandler) processRelayCell(cell sphinx.Cell) (*sphinx.Cell, error) {
+	circuit, exists := c.circuits[cell.Id]
+	if !exists {
+		return nil, ErrCircuitDoesntExists
+	}
+	log.Printf("\n cell %+v", cell)
+
+	payload, err := cell.GetPayloadWithoutPadding()
+	if err != nil {
+		return nil, fmt.Errorf("cell.GetPayloadWithoutPadding(). %w", err)
+	}
+
+	decryptedPayload, err := c.generalKey.DecryptPayload(payload, circuit.SenderPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("c.generalKey.DecryptPayload(payload, circuit.NextRelayPubkey). %w", err)
+	}
+
+	if circuit.NextRelay == "" {
+		log.Println("is last hop should have a relay payload")
+		cborUnmarshaller := sphinx.GetCBORStrictUnmarshaller()
+		var relayPayload sphinx.RelayPayload
+		err = cborUnmarshaller.Unmarshal(decryptedPayload, &relayPayload)
+		if err != nil {
+			return nil, fmt.Errorf("cborUnmarshaller.Unmarshal(decryptedPayload, &relayPayload). %w", err)
+		}
+
+		log.Printf("\n relayPayload: %+v", relayPayload)
+		return nil, nil
+	}
+
+	newCell := sphinx.Cell{Id: circuit.Id, Cmd: cell.Cmd}
+	err = newCell.SetPayloadAndAddPadding(decryptedPayload)
+	if err != nil {
+		return nil, fmt.Errorf("newCell.SetPayloadAndAddPadding(decryptedPayload). %w", err)
+	}
+	return &newCell, nil
 }
 
 func (c *CircuitHandler) processCreateCell(cell sphinx.CreateCircuitCell) (*sphinx.CreateCircuitCell, error) {
@@ -152,11 +229,13 @@ func (c *CircuitHandler) processCreateCell(cell sphinx.CreateCircuitCell) (*sphi
 	if exists {
 		return nil, ErrCircuitAlreadyExists
 	}
+	log.Printf("\n cell %+v", cell)
 
 	payload, err := c.generalKey.ParseCreateCircuitCellPayload(cell)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("c.generalKey.ParseCreateCircuitCellPayload(cell). %w", err)
 	}
+
 	newCircuit := Circuit{
 		Id:              cell.Id,
 		Active:          true,
@@ -242,7 +321,64 @@ type Circuit struct {
 	PrevRelay       string           `cbor:"pr"`
 }
 
-func NewCircuits() (CircuitHandler, error) {
+// MarshalCBOR implements custom CBOR marshaling for Circuit
+func (c Circuit) MarshalCBOR() ([]byte, error) {
+	// Create a struct with the same fields but with []byte instead of *btcec.PublicKey
+	type Alias Circuit
+	aux := struct {
+		SenderPubKey    []byte `cbor:"s"`
+		NextRelayPubkey []byte `cbor:"np"`
+		*Alias
+	}{
+		Alias: (*Alias)(&c),
+	}
+
+	if c.SenderPubKey != nil {
+		aux.SenderPubKey = c.SenderPubKey.SerializeCompressed()
+	}
+
+	if c.NextRelayPubkey != nil {
+		aux.NextRelayPubkey = c.NextRelayPubkey.SerializeCompressed()
+	}
+
+	return sphinx.GetCBORStrictEncoder().Marshal(aux)
+}
+
+// UnmarshalCBOR implements custom CBOR unmarshaling for Circuit
+func (c *Circuit) UnmarshalCBOR(data []byte) error {
+	type Alias Circuit
+	aux := struct {
+		SenderPubKey    []byte `cbor:"s"`
+		NextRelayPubkey []byte `cbor:"np"`
+		*Alias
+	}{
+		Alias: (*Alias)(c),
+	}
+
+	if err := sphinx.GetCBORStrictUnmarshaller().Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if aux.SenderPubKey != nil {
+		pubKey, err := btcec.ParsePubKey(aux.SenderPubKey)
+		if err != nil {
+			return err
+		}
+		c.SenderPubKey = pubKey
+	}
+
+	if aux.NextRelayPubkey != nil {
+		pubKey, err := btcec.ParsePubKey(aux.NextRelayPubkey)
+		if err != nil {
+			return err
+		}
+		c.NextRelayPubkey = pubKey
+	}
+
+	return nil
+}
+
+func NewCircuit() (CircuitHandler, error) {
 	sphinx, err := sphinx.NewSphinx()
 	if err != nil {
 		return CircuitHandler{}, err

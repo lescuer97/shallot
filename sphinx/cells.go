@@ -41,7 +41,7 @@ type Cell struct {
 	Id      [4]byte                  `cbor:"i"`
 	Cmd     CellCommand              `cbor:"cmd"`
 	Length  uint16                   `cbor:"l"`
-	Payload [MaxCellPayloadSize]byte `cbor:"c"`
+	Payload [MaxCellPayloadSize]byte `cbor:"cp"`
 }
 
 func (c *Cell) Serialize() ([]byte, error) {
@@ -92,22 +92,108 @@ type CreateCircuitCell struct {
 	SenderPubkey *btcec.PublicKey `cbor:"s"`
 }
 
+// MarshalCBOR implements custom CBOR marshaling for CreateCircuitCell
+func (c CreateCircuitCell) MarshalCBOR() ([]byte, error) {
+	// Create a struct with the same fields but with []byte instead of *btcec.PublicKey
+	type Alias CreateCircuitCell
+	aux := struct {
+		SenderPubkey []byte `cbor:"s"`
+		*Alias
+	}{
+		Alias: (*Alias)(&c),
+	}
+
+	if c.SenderPubkey != nil {
+		aux.SenderPubkey = c.SenderPubkey.SerializeCompressed()
+	}
+
+	return GetCBORStrictEncoder().Marshal(aux)
+}
+
+// UnmarshalCBOR implements custom CBOR unmarshaling for CreateCircuitCell
+func (c *CreateCircuitCell) UnmarshalCBOR(data []byte) error {
+	type Alias CreateCircuitCell
+	aux := struct {
+		SenderPubkey []byte `cbor:"s"`
+		*Alias
+	}{
+		Alias: (*Alias)(c),
+	}
+
+	if err := GetCBORStrictUnmarshaller().Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if aux.SenderPubkey != nil {
+		pubKey, err := btcec.ParsePubKey(aux.SenderPubkey)
+		if err != nil {
+			return err
+		}
+		c.SenderPubkey = pubKey
+	}
+
+	return nil
+}
+
 type CreateCircuitPayload struct {
 	NextRelay       string           `cbor:"n"`
 	NextRelayPubkey *btcec.PublicKey `cbor:"np"`
 	Payload         []byte           `cbor:"p"`
 }
 
+// MarshalCBOR implements custom CBOR marshaling for CreateCircuitPayload
+func (c CreateCircuitPayload) MarshalCBOR() ([]byte, error) {
+	// Create a struct with the same fields but with []byte instead of *btcec.PublicKey
+	type Alias CreateCircuitPayload
+	aux := struct {
+		NextRelayPubkey []byte `cbor:"np"`
+		*Alias
+	}{
+		Alias: (*Alias)(&c),
+	}
+
+	if c.NextRelayPubkey != nil {
+		aux.NextRelayPubkey = c.NextRelayPubkey.SerializeCompressed()
+	}
+
+	return GetCBORStrictEncoder().Marshal(aux)
+}
+
+// UnmarshalCBOR implements custom CBOR unmarshaling for CreateCircuitPayload
+func (c *CreateCircuitPayload) UnmarshalCBOR(data []byte) error {
+	type Alias CreateCircuitPayload
+	aux := struct {
+		NextRelayPubkey []byte `cbor:"np"`
+		*Alias
+	}{
+		Alias: (*Alias)(c),
+	}
+
+	if err := GetCBORStrictUnmarshaller().Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if aux.NextRelayPubkey != nil {
+		pubKey, err := btcec.ParsePubKey(aux.NextRelayPubkey)
+		if err != nil {
+			return err
+		}
+		c.NextRelayPubkey = pubKey
+	}
+
+	return nil
+}
+
 const RelayPayloadMaxSize = MaxPacketSize - 9
 
 type RelayPayload struct {
-	RelayCommnad RelayCommand `cbor:"c"`
-	Payload      []byte       `cbor:"p"`
+	RelayCommnad RelayCommand `cbor:"rc"`
+	Payload      []byte       `cbor:"rpp"`
 }
 
 type NostrRelay struct {
-	Url    string           `cbor:"url"`
-	Pubkey *btcec.PublicKey `cbor:"pk"`
+	Url    string
+	Pubkey *btcec.PublicKey
 }
 
 func GetCBORStrictEncoder() cbor.EncMode {
@@ -121,12 +207,12 @@ func GetCBORStrictEncoder() cbor.EncMode {
 func GetCBORStrictUnmarshaller() cbor.DecMode {
 	strictDecOptions := cbor.DecOptions{
 		// Strict decoding of integers
-		IntDec: cbor.IntDecConvertNone,
-		// Require maps to have sorted keys
-		MapKeyByteString: cbor.MapKeyByteStringForbidden,
-		// Strict float handling
-		// No extra elements in arrays or maps
-		ExtraReturnErrors: cbor.ExtraDecErrorUnknownField,
+		// IntDec: cbor.IntDecConvertNone,
+		// // Require maps to have sorted keys
+		// MapKeyByteString: cbor.MapKeyByteStringForbidden,
+		// // Strict float handling
+		// // No extra elements in arrays or maps
+		// ExtraReturnErrors: cbor.ExtraDecErrorUnknownField,
 	}
 
 	strictDecMode, err := strictDecOptions.DecMode()
@@ -154,6 +240,7 @@ func (s *Sphinx) MakeCreateCircuitCell(relays []NostrRelay) (CreateCircuitCell, 
 
 	var encryptedPayload []byte
 	for i := range relays {
+		log.Printf("\n url:  %+v", relays[i].Url)
 		// INFO: The index 0 is actually the last hop
 		if i == 0 {
 			createPayload := CreateCircuitPayload{}
@@ -166,7 +253,6 @@ func (s *Sphinx) MakeCreateCircuitCell(relays []NostrRelay) (CreateCircuitCell, 
 			if err != nil {
 				return CreateCircuitCell{}, err
 			}
-
 			encryptedPayload = encrypted
 			continue
 		}
@@ -282,7 +368,7 @@ func (s *Sphinx) MakeRelayCircuitCell(circuitId [4]byte, relays []NostrRelay, fi
 
 	cell := Cell{
 		Id:  circuitId,
-		Cmd: Create,
+		Cmd: Relay_CMD,
 	}
 
 	err := cell.SetPayloadAndAddPadding(encryptedPayload)

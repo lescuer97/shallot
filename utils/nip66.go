@@ -65,7 +65,7 @@ eventLoop:
 			// Process the NIP-66 event
 			relayInfo, err := processNIP66Event(event)
 			if err != nil {
-				log.Printf("error processing nip66 event %+v",err)
+				log.Printf("error processing nip66 event %+v", err)
 				continue
 			}
 
