@@ -97,6 +97,26 @@ func (c *CircuitHandler) ProcessNostrEvent(evt *nostr.Event) (bool, *sphinx.Cell
 			return isFinalStep, nil, nil, fmt.Errorf("c.processCreateCell(createCell). %w", err)
 		}
 		return isFinalStep, &cell.Cmd, nil, nil
+
+	case sphinx.Response:
+		responseCell := sphinx.ResponseCircuitCell{}
+		err = cborUnmarshaller.Unmarshal(contentBytes, &responseCell)
+		if err != nil {
+			return isFinalStep, nil, nil, fmt.Errorf("cborUnmarshaller.Unmarshal(contentBytes, &createCell). %w", err)
+		}
+
+		cell, err := c.processResponseCell(responseCell)
+		if err != nil {
+			return isFinalStep, nil, nil, fmt.Errorf("c.processResponseCell(cell). %w", err)
+		}
+
+		err = c.sendResponseToPrevRelay(cell)
+		if err != nil {
+			return isFinalStep, nil, nil, fmt.Errorf("c.processCreateCell(createCell). %w", err)
+		}
+
+		// c.res
+
 	case sphinx.Destroy:
 		log.Panicf("still not implemented destroying messages")
 	default:
@@ -185,7 +205,83 @@ func (c *CircuitHandler) sendPayloadToNextHop(content []byte, circuitId CircuitI
 	return nil
 
 }
+func (c *CircuitHandler) sendResponseToPrevRelay(cell *sphinx.ResponseCircuitCell) error {
+	if cell == nil {
+		return fmt.Errorf("create circuit cell is nil")
+	}
+	unmarshaller := sphinx.GetCBORStrictEncoder()
+	payload, err := unmarshaller.Marshal(cell)
+	if err != nil {
+		return err
+	}
 
+	event := nostr.Event{
+		Kind:    OnionMsgKind,
+		Content: hex.EncodeToString(payload),
+	}
+	err = event.Sign(c.generalKey.PrivateKey.Key.String())
+	if err != nil {
+		return err
+	}
+
+	circuit, exists := c.circuits[cell.Id]
+	if !exists {
+		return ErrCircuitDoesntExists
+	}
+
+	ctx := context.Background()
+
+	// INFO: check if we already are connected to the relay. if not we create it and add the new one.
+	relay, exists := c.relayConnection[circuit.PrevRelay]
+	if !exists || relay == nil {
+		relay = nostr.NewRelay(ctx, circuit.PrevRelay)
+		err = relay.Connect(ctx)
+		if err != nil {
+			return err
+		}
+		c.relayConnection[circuit.PrevRelay] = relay
+	}
+
+	if !relay.IsConnected() {
+		err = relay.Connect(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
+	log.Printf("\n event %+v", event)
+	err = relay.Publish(ctx, event)
+	return nil
+
+}
+
+func (c *CircuitHandler) processResponseCell(cell sphinx.ResponseCircuitCell) (*sphinx.ResponseCircuitCell, error) {
+	circuit, exists := c.circuits[cell.Id]
+	if !exists {
+		return nil, ErrCircuitDoesntExists
+	}
+	payload, err := cell.GetPayloadWithoutPadding()
+	if err != nil {
+		return nil, fmt.Errorf("cell.GetPayloadWithoutPadding(). %w", err)
+	}
+
+	encryptedPayload, err := c.generalKey.EncryptPayload(payload, circuit.SenderPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("c.generalKey.DecryptPayload(payload, circuit.NextRelayPubkey). %w", err)
+	}
+
+	newCell := sphinx.ResponseCircuitCell{Cell: sphinx.Cell{
+		Id:  circuit.Id,
+		Cmd: cell.Cmd,
+	}, ResponseRelayPubkey: cell.ResponseRelayPubkey}
+
+	err = newCell.SetPayloadAndAddPadding(encryptedPayload)
+	if err != nil {
+		return nil, fmt.Errorf("newCell.SetPayloadAndAddPadding(encryptedPayload). %w", err)
+	}
+	return &newCell, nil
+
+}
 func (c *CircuitHandler) processRelayCell(cell sphinx.Cell) (*sphinx.Cell, error) {
 	circuit, exists := c.circuits[cell.Id]
 	if !exists {

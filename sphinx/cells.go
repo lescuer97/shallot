@@ -25,6 +25,7 @@ const (
 	Create    CellCommand = iota
 	Relay_CMD CellCommand = iota + 1
 	Destroy   CellCommand = iota + 2
+	Response  CellCommand = iota + 3
 )
 
 type RelayCommand byte
@@ -378,3 +379,73 @@ func (s *Sphinx) MakeRelayCircuitCell(circuitId [4]byte, relays []NostrRelay, fi
 
 	return cell, nil
 }
+
+type ResponseCircuitCell struct {
+	Cell
+	ResponseRelayPubkey *btcec.PublicKey `cbor:"rpk"`
+}
+
+// MarshalCBOR implements custom CBOR marshaling for CreateCircuitCell
+func (c ResponseCircuitCell) MarshalCBOR() ([]byte, error) {
+	// Create a struct with the same fields but with []byte instead of *btcec.PublicKey
+	type Alias ResponseCircuitCell
+	aux := struct {
+		ResponseRelayPubkey []byte `cbor:"rpk"`
+		*Alias
+	}{
+		Alias: (*Alias)(&c),
+	}
+
+	if c.ResponseRelayPubkey != nil {
+		aux.ResponseRelayPubkey = c.ResponseRelayPubkey.SerializeCompressed()
+	}
+
+	return GetCBORStrictEncoder().Marshal(aux)
+}
+
+// UnmarshalCBOR implements custom CBOR unmarshaling for CreateCircuitCell
+func (c *ResponseCircuitCell) UnmarshalCBOR(data []byte) error {
+	type Alias ResponseCircuitCell
+	aux := struct {
+		ResponseRelayPubkey []byte `cbor:"rpk"`
+		*Alias
+	}{
+		Alias: (*Alias)(c),
+	}
+
+	if err := GetCBORStrictUnmarshaller().Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if aux.ResponseRelayPubkey != nil {
+		pubKey, err := btcec.ParsePubKey(aux.ResponseRelayPubkey)
+		if err != nil {
+			return err
+		}
+		c.ResponseRelayPubkey = pubKey
+	}
+
+	return nil
+}
+
+// Ther relays variable should be on the order of decryption
+func (s *Sphinx) ParseResponseMessage(msg ResponseCircuitCell, relays []NostrRelay) ([]byte, error) {
+
+	payloadForDecription := msg.Payload[:]
+	for _, relay := range relays {
+		decriptedPayload, err := s.DecryptPayload(payloadForDecription[:], relay.Pubkey)
+		if err != nil {
+			return nil, err
+		}
+		payloadForDecription = decriptedPayload
+
+	}
+	if msg.Length > uint16(len(payloadForDecription)) {
+		return nil, ErrorLengthLongerThanPayload
+	}
+
+	return payloadForDecription[:msg.Length], nil
+
+}
+
+// func

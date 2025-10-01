@@ -45,6 +45,11 @@ func main() {
 				if isFinal && cellCommand == nil {
 					log.Panicf("if the last hop is final there should have always been some end command")
 				}
+				  
+				// if *cellCommand == sphinx.Response {
+				//
+				//
+				// }
 
 				log.Printf("\n LastStep: %+v", isFinal)
 				log.Printf("\n finished a call to: %+v", *cellCommand)
